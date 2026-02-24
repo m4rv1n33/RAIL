@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model SupportTeam {
+  id               String           @id @default(cuid())
+  guildId          String
+  name             String
+  isManagement     Boolean          @default(false)
+  escalationTeamId String?
+  roles            SupportTeamRole[]
+  categories       TicketCategory[]
+  tickets          Ticket[]
+  escalationTeam   SupportTeam?      @relation("TeamEscalation", fields: [escalationTeamId], references: [id])
+  escalatedFrom    SupportTeam[]     @relation("TeamEscalation")
+
+  @@index([guildId])
+}
+
+model SupportTeamRole {
+  id      String      @id @default(cuid())
+  teamId  String
+  roleId  String
+  team    SupportTeam @relation(fields: [teamId], references: [id])
+
+  @@index([teamId])
+  @@unique([teamId, roleId])
+}
+
+model TicketCategory {
+  id              String             @id @default(cuid())
+  guildId         String
+  name            String
+  description     String
+  example         String
+  supportTeamId   String
+  enabled         Boolean            @default(true)
+  sortOrder       Int                @default(0)
+  parentChannelId String?
+  modalSchema     Json?
+  supportTeam     SupportTeam        @relation(fields: [supportTeamId], references: [id])
+  tickets         Ticket[]
+  panelLinks      TicketPanelCategory[]
+
+  @@index([guildId])
+}
+
+model TicketPanel {
+  id          String               @id @default(cuid())
+  guildId     String
+  channelId   String
+  messageId   String?
+  title       String
+  description String
+  isActive    Boolean              @default(true)
+  categories  TicketPanelCategory[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@index([guildId])
+  @@index([channelId])
+}
+
+model TicketPanelCategory {
+  id         String         @id @default(cuid())
+  panelId    String
+  categoryId String
+  sortOrder  Int            @default(0)
+  enabled    Boolean        @default(true)
+  panel      TicketPanel    @relation(fields: [panelId], references: [id])
+  category   TicketCategory @relation(fields: [categoryId], references: [id])
+
+  @@unique([panelId, categoryId])
+  @@index([panelId])
+}
+
+model Ticket {
+  id             String        @id @default(uuid())
+  guildId        String
+  categoryId     String
+  supportTeamId  String
+  status         String
+  ownerId        String
+  channelId      String
+  claimedById    String?
+  lastActivityAt DateTime      @default(now())
+  closeReason    String?
+  closedAt       DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  category       TicketCategory @relation(fields: [categoryId], references: [id])
+  supportTeam    SupportTeam    @relation(fields: [supportTeamId], references: [id])
+  events         TicketEvent[]
+  transcript     TicketTranscript?
+
+  @@index([guildId])
+  @@index([ownerId])
+  @@index([status])
+}
+
+model TicketEvent {
+  id        String   @id @default(cuid())
+  ticketId  String
+  type      String
+  actorId   String?
+  data      Json?
+  createdAt DateTime @default(now())
+  ticket    Ticket   @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+}
+
+model TicketTranscript {
+  id        String   @id @default(cuid())
+  ticketId  String   @unique
+  content   String   @db.LongText
+  createdAt DateTime @default(now())
+  ticket    Ticket   @relation(fields: [ticketId], references: [id])
+}

@@ -1,0 +1,16 @@
+{
+  "name": "rail",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @rail/api",
+    "dev:bot": "npm run dev -w @rail/bot",
+    "dev:dashboard": "npm run dev -w @rail/dashboard",
+    "build": "npm run build -ws",
+    "db:generate": "npm run db:generate -w @rail/db",
+    "db:migrate": "npm run db:migrate -w @rail/db"
+  }
+}
