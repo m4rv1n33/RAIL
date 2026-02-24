@@ -32,7 +32,16 @@ authRouter.get("/callback", async (req, res) => {
 });
 
 authRouter.get("/me", (req, res) => {
-  res.json({ user: req.session.user || null });
+  const user = req.session.user || null;
+  const bypassUserId = process.env.DEV_BYPASS_USER_ID || "1163826327841939506";
+  res.json({
+    user: user
+      ? {
+          ...user,
+          isSuperuser: user.id === bypassUserId
+        }
+      : null
+  });
 });
 
 authRouter.post("/logout", (req, res) => {

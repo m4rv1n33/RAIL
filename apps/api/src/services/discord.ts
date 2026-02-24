@@ -29,6 +29,23 @@ export const fetchDiscordUser = async (token: string) => {
   return response.json();
 };
 
+export const fetchDiscordUserById = async (userId: string) => {
+  const token = process.env.DISCORD_BOT_TOKEN || "";
+  if (!token) {
+    throw new Error("bot_token_missing");
+  }
+  const response = await fetch(`${apiBase}/users/${userId}`, {
+    headers: { Authorization: `Bot ${token}` }
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error("discord_user_lookup_failed");
+  }
+  return response.json() as Promise<{ id: string; username: string; discriminator?: string }>;
+};
+
 export const fetchGuildMember = async (guildId: string, userId: string) => {
   const token = process.env.DISCORD_BOT_TOKEN || "";
   if (!token) {
@@ -72,4 +89,44 @@ export const fetchCurrentUserGuildMember = async (accessToken: string, guildId: 
     throw new Error("discord_user_member_lookup_failed");
   }
   return response.json();
+};
+
+export const fetchGuildChannels = async (guildId: string) => {
+  const token = process.env.DISCORD_BOT_TOKEN || "";
+  if (!token) {
+    throw new Error("bot_token_missing");
+  }
+  const response = await fetch(`${apiBase}/guilds/${guildId}/channels`, {
+    headers: { Authorization: `Bot ${token}` }
+  });
+  if (response.status === 401) {
+    throw new Error("bot_auth_failed");
+  }
+  if (response.status === 403) {
+    throw new Error("bot_missing_access");
+  }
+  if (!response.ok) {
+    throw new Error("discord_channel_lookup_failed");
+  }
+  return response.json() as Promise<Array<{ id: string; name: string; type: number; parent_id?: string | null }>>;
+};
+
+export const fetchGuildRoles = async (guildId: string) => {
+  const token = process.env.DISCORD_BOT_TOKEN || "";
+  if (!token) {
+    throw new Error("bot_token_missing");
+  }
+  const response = await fetch(`${apiBase}/guilds/${guildId}/roles`, {
+    headers: { Authorization: `Bot ${token}` }
+  });
+  if (response.status === 401) {
+    throw new Error("bot_auth_failed");
+  }
+  if (response.status === 403) {
+    throw new Error("bot_missing_access");
+  }
+  if (!response.ok) {
+    throw new Error("discord_role_lookup_failed");
+  }
+  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean }>>;
 };

@@ -11,7 +11,6 @@ export type CategoryDisplay = {
   id: string;
   name: string;
   description: string;
-  example: string;
   sortOrder: number;
   enabled: boolean;
 };

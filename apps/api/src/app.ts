@@ -5,6 +5,9 @@ import { authRouter } from "./routes/auth.js";
 import { panelsRouter } from "./routes/panels.js";
 import { categoriesRouter } from "./routes/categories.js";
 import { teamsRouter } from "./routes/teams.js";
+import { settingsRouter } from "./routes/settings.js";
+import { discordRouter } from "./routes/discord.js";
+import { transcriptsRouter } from "./routes/transcripts.js";
 
 export const createApp = () => {
   const app = express();
@@ -38,6 +41,9 @@ export const createApp = () => {
   app.use("/teams", teamsRouter);
   app.use("/categories", categoriesRouter);
   app.use("/panels", panelsRouter);
+  app.use("/settings", settingsRouter);
+  app.use("/discord", discordRouter);
+  app.use("/transcripts", transcriptsRouter);
 
   return app;
 };

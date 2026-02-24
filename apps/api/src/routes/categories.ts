@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "@rail/db";
 import { Prisma } from "@prisma/client";
 import { categorySchema } from "@rail/shared";
+import { TicketStatus } from "@rail/shared";
 import { requireSession, requireStaff } from "../middleware/auth.js";
 
 export const categoriesRouter = Router();
@@ -54,14 +55,40 @@ categoriesRouter.delete("/:id", requireSession, requireStaff, async (req, res) =
   }
 
   const ticketCount = await prisma.ticket.count({
-    where: { guildId, categoryId: id }
+    where: {
+      guildId,
+      categoryId: id,
+      status: { in: [TicketStatus.Open, TicketStatus.InProgress, TicketStatus.Waiting] }
+    }
   });
   if (ticketCount > 0) {
     res.status(409).json({ error: "category_in_use" });
     return;
   }
 
-  await prisma.ticketPanelCategory.deleteMany({ where: { categoryId: id } });
-  await prisma.ticketCategory.delete({ where: { id } });
+  const historicalTickets = await prisma.ticket.findMany({
+    where: { guildId, categoryId: id },
+    select: { id: true }
+  });
+
+  await prisma.$transaction(async (tx) => {
+    const ticketIds = historicalTickets.map((ticket) => ticket.id);
+
+    if (ticketIds.length > 0) {
+      await tx.ticketTranscript.deleteMany({
+        where: { ticketId: { in: ticketIds } }
+      });
+      await tx.ticketEvent.deleteMany({
+        where: { ticketId: { in: ticketIds } }
+      });
+      await tx.ticket.deleteMany({
+        where: { id: { in: ticketIds } }
+      });
+    }
+
+    await tx.ticketPanelCategory.deleteMany({ where: { categoryId: id } });
+    await tx.ticketCategory.delete({ where: { id } });
+  });
+
   res.json({ ok: true });
 });

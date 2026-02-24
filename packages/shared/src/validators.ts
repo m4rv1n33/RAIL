@@ -24,7 +24,6 @@ export const panelUpdateSchema = z.object({
 export const categorySchema = z.object({
   name: z.string().min(2).max(64),
   description: z.string().min(1).max(200),
-  example: z.string().min(1).max(200),
   supportTeamId: z.string().min(1),
   parentChannelId: z.string().optional(),
   enabled: z.boolean().default(true),
