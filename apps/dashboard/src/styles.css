@@ -197,6 +197,10 @@ textarea {
   font-size: 13px;
 }
 
+.multiline-text {
+  white-space: pre-line;
+}
+
 .meta {
   font-size: 12px;
   color: #475569;
@@ -235,8 +239,83 @@ textarea {
   color: #1d4ed8;
 }
 
+.role-picker {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.role-item {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fff;
+  color: #0f172a;
+  padding: 9px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.role-item:last-child {
+  border-bottom: 0;
+}
+
+.role-item:hover {
+  background: #f8fafc;
+}
+
+.role-item.checked {
+  background: #eff6ff;
+}
+
+.checkbox {
+  width: 16px;
+  height: 16px;
+  border: 1px solid #94a3b8;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: transparent;
+  background: #fff;
+}
+
+.checkbox.checked {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
 .muted {
   color: #64748b;
+}
+
+.transcript-frame {
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid #dbe4ef;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.transcript-pre {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #dbe4ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
 }
 
 @media (max-width: 700px) {

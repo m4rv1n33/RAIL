@@ -8,16 +8,12 @@ datasource db {
 }
 
 model SupportTeam {
-  id               String           @id @default(cuid())
-  guildId          String
-  name             String
-  isManagement     Boolean          @default(false)
-  escalationTeamId String?
-  roles            SupportTeamRole[]
-  categories       TicketCategory[]
-  tickets          Ticket[]
-  escalationTeam   SupportTeam?      @relation("TeamEscalation", fields: [escalationTeamId], references: [id])
-  escalatedFrom    SupportTeam[]     @relation("TeamEscalation")
+  id         String            @id @default(cuid())
+  guildId    String
+  name       String
+  roles      SupportTeamRole[]
+  categories TicketCategory[]
+  tickets    Ticket[]
 
   @@index([guildId])
 }
@@ -37,7 +33,6 @@ model TicketCategory {
   guildId         String
   name            String
   description     String
-  example         String
   supportTeamId   String
   enabled         Boolean            @default(true)
   sortOrder       Int                @default(0)
@@ -55,8 +50,8 @@ model TicketPanel {
   guildId     String
   channelId   String
   messageId   String?
-  title       String
-  description String
+  title       String               @db.VarChar(256)
+  description String               @db.Text
   isActive    Boolean              @default(true)
   categories  TicketPanelCategory[]
   createdAt   DateTime             @default(now())

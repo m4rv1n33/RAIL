@@ -9,6 +9,8 @@ import {
   EmbedBuilder,
   GatewayIntentBits,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  MessageFlags,
   ModalBuilder,
   StringSelectMenuInteraction,
   Partials,
@@ -21,6 +23,9 @@ import {
   TextInputStyle
 } from "discord.js";
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { existsSync } from "node:fs";
 import { prisma } from "@rail/db";
 import { TicketStatus } from "@rail/shared";
 
@@ -37,6 +42,10 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
+client.on("error", (error) => {
+  console.error("Discord client error:", error);
+});
+
 type ModalField = {
   id: string;
   label: string;
@@ -50,6 +59,25 @@ type ModalField = {
 type ModalSchema = {
   title: string;
   fields: ModalField[];
+};
+
+const getSettingsFilePath = () => {
+  const candidates = [
+    path.resolve(process.cwd(), "data", "guild-settings.json"),
+    path.resolve(process.cwd(), "..", "..", "data", "guild-settings.json")
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
+};
+
+const getTranscriptChannelIdForGuild = async (guildId: string) => {
+  const settingsFilePath = getSettingsFilePath();
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<string, { transcriptChannelId?: string }>;
+    return parsed[guildId]?.transcriptChannelId || process.env.TRANSCRIPT_CHANNEL_ID || "";
+  } catch {
+    return process.env.TRANSCRIPT_CHANNEL_ID || "";
+  }
 };
 
 const parseModalSchema = (value: unknown): ModalSchema | null => {
@@ -125,15 +153,14 @@ const buildPanelEmbed = async (panelId: string) => {
     .forEach((link) => {
       embed.addFields({
         name: link.category.name,
-        value: `${link.category.description}\nExample: ${link.category.example}`
+        value: link.category.description
       });
     });
   const options = panel.categories
     .filter((link) => link.enabled && link.category.enabled)
     .map((link) => ({
       label: link.category.name,
-      value: link.category.id,
-      description: link.category.example
+      value: link.category.id
     }));
   const select = new StringSelectMenuBuilder()
     .setCustomId(`panel:${panel.id}`)
@@ -152,10 +179,6 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
   if (!team) {
     throw new Error("team_not_found");
   }
-  const managementTeams = await prisma.supportTeam.findMany({
-    where: { guildId, isManagement: true },
-    include: { roles: true }
-  });
   const overwrites = [
     {
       id: guild.roles.everyone.id,
@@ -178,18 +201,6 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
         PermissionsBitField.Flags.SendMessages,
         PermissionsBitField.Flags.ReadMessageHistory
       ]
-    });
-  });
-  managementTeams.forEach((management) => {
-    management.roles.forEach((role) => {
-      overwrites.push({
-        id: role.roleId,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory
-        ]
-      });
     });
   });
   return { overwrites, team };
@@ -408,15 +419,14 @@ const getEnabledCategories = async (guildId: string) => {
   });
 };
 
-const buildCategorySelect = (customId: string, categories: { id: string; name: string; example: string }[]) => {
+const buildCategorySelect = (customId: string, categories: { id: string; name: string }[]) => {
   const select = new StringSelectMenuBuilder()
     .setCustomId(customId)
     .setPlaceholder("Select a category")
     .addOptions(
       categories.map((category) => ({
         label: category.name,
-        value: category.id,
-        description: category.example
+        value: category.id
       }))
     );
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
@@ -428,15 +438,6 @@ const userHasTeamRole = (roleIds: string[], ticket: Awaited<ReturnType<typeof ge
   }
   const teamRoles = ticket.supportTeam.roles.map((role) => role.roleId);
   return roleIds.some((roleId) => teamRoles.includes(roleId));
-};
-
-const userHasManagementRole = async (guildId: string, roleIds: string[]) => {
-  const managementTeams = await prisma.supportTeam.findMany({
-    where: { guildId, isManagement: true },
-    include: { roles: true }
-  });
-  const managementRoleIds = managementTeams.flatMap((team) => team.roles.map((role) => role.roleId));
-  return roleIds.some((roleId) => managementRoleIds.includes(roleId));
 };
 
 const userHasSupportRole = async (guildId: string, roleIds: string[]) => {
@@ -464,11 +465,10 @@ const isAuthorizedForTicket = async (userId: string, guildId: string, roleIds: s
     // Continue to support role check
   }
   
-  // Check support/management roles
+  // Check support roles
   if (ticket) {
     const hasTeam = userHasTeamRole(roleIds, ticket);
-    const hasManagement = await userHasManagementRole(guildId, roleIds);
-    return hasTeam || hasManagement;
+    return hasTeam;
   }
   
   return await userHasSupportRole(guildId, roleIds);
@@ -491,6 +491,70 @@ const canManageTicket = async (
     return true;
   }
   return ticket.claimedById === userId;
+};
+
+const switchTicketToTeam = async (
+  ticket: NonNullable<Awaited<ReturnType<typeof getTicketById>>>,
+  actorId: string,
+  teamId: string
+) => {
+  const category = await prisma.ticketCategory.findFirst({
+    where: { guildId: ticket.guildId, supportTeamId: teamId, enabled: true },
+    orderBy: { sortOrder: "asc" }
+  });
+  if (!category) {
+    throw new Error("team_has_no_category");
+  }
+
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: { categoryId: category.id, supportTeamId: category.supportTeamId }
+  });
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId: ticket.id,
+      type: "TRANSFER",
+      actorId,
+      data: { fromCategoryId: ticket.categoryId, toCategoryId: category.id, toTeamId: teamId }
+    }
+  });
+
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (channel && channel.type === ChannelType.GuildText) {
+    const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
+    await channel.permissionOverwrites.set(overwrites);
+    await channel.setParent(category.parentChannelId || null).catch(() => null);
+    if (ticket.claimedById) {
+      await applyClaimedPermissions(ticket.id, ticket.claimedById);
+    }
+  }
+
+  const team = await prisma.supportTeam.findFirst({ where: { id: teamId } });
+  return { teamName: team?.name || "selected team" };
+};
+
+const autocompleteTeams = async (interaction: AutocompleteInteraction) => {
+  if (!interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "team") {
+    await interaction.respond([]);
+    return;
+  }
+  const query = String(focused.value || "").toLowerCase();
+  const teams = await prisma.supportTeam.findMany({
+    where: {
+      guildId: interaction.guildId,
+      name: { contains: query }
+    },
+    orderBy: { name: "asc" },
+    take: 25
+  });
+  await interaction.respond(
+    teams.map((team) => ({ name: team.name, value: team.id }))
+  );
 };
 
 const registerCommands = async () => {
@@ -522,8 +586,18 @@ const registerCommands = async () => {
               )
           )
       )
-      .addSubcommand((sub) => sub.setName("transfer").setDescription("Transfer the ticket"))
-      .addSubcommand((sub) => sub.setName("escalate").setDescription("Escalate the ticket")),
+      .addSubcommand((sub) =>
+        sub
+          .setName("switchcategory")
+          .setDescription("Switch this ticket to another team's category")
+          .addStringOption((option) =>
+            option
+              .setName("team")
+              .setDescription("Target support team")
+              .setRequired(true)
+              .setAutocomplete(true)
+          )
+      ),
     new SlashCommandBuilder()
       .setName("panel")
       .setDescription("Panel actions")
@@ -537,6 +611,16 @@ const registerCommands = async () => {
               .setRequired(false)
               .addChannelTypes(ChannelType.GuildText)
           )
+      ),
+    new SlashCommandBuilder()
+      .setName("switchcategory")
+      .setDescription("Switch current ticket to another team's category")
+      .addStringOption((option) =>
+        option
+          .setName("team")
+          .setDescription("Target support team")
+          .setRequired(true)
+          .setAutocomplete(true)
       )
   ].map((command) => command.toJSON());
   const rest = new REST({ version: "10" }).setToken(token);
@@ -553,6 +637,81 @@ const setTicketStatus = async (ticketId: string, status: string, actorId: string
   });
 };
 
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const buildTranscriptHtml = (
+  ticketId: string,
+  lines: Array<{ timestamp: number; author: string; content: string }>
+) => {
+  const rows = lines
+    .map((line) => {
+      const time = new Date(line.timestamp).toLocaleString();
+      return `
+      <article class="msg">
+        <div class="meta">${escapeHtml(line.author)} • ${escapeHtml(time)}</div>
+        <div class="content">${escapeHtml(line.content || "(no text content)")}</div>
+      </article>`;
+    })
+    .join("\n");
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ticket Transcript ${escapeHtml(ticketId)}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Inter", "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        color: #0f172a;
+      }
+      body { margin: 0; padding: 24px; }
+      .wrap { max-width: 960px; margin: 0 auto; }
+      .card {
+        background: #fff;
+        border: 1px solid #dbe4ef;
+        border-radius: 14px;
+        padding: 18px;
+      }
+      h1 { margin: 0 0 12px; font-size: 24px; }
+      .msg {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #f8fafc;
+        margin-bottom: 10px;
+      }
+      .meta { font-size: 12px; color: #475569; margin-bottom: 6px; }
+      .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <h1>Ticket Transcript • ${escapeHtml(ticketId)}</h1>
+        ${rows || "<p>No messages captured.</p>"}
+      </section>
+    </main>
+  </body>
+</html>`;
+};
+
+const getDashboardTranscriptUrl = (ticketId: string) => {
+  const base = (process.env.DASHBOARD_ORIGIN || process.env.DASHBOARD_URL || "").trim();
+  if (!base) {
+    return "";
+  }
+  return `${base.replace(/\/$/, "")}/#/transcripts/${ticketId}`;
+};
+
 const closeTicket = async (ticketId: string, actorId: string, reason?: string) => {
   const ticket = await prisma.ticket.findFirst({
     where: { id: ticketId },
@@ -561,13 +720,15 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
   if (!ticket) {
     return;
   }
+  const normalizedReason = reason?.trim() || (actorId === "system" ? "Closed due to inactivity" : undefined);
+  const closedAt = new Date();
   await prisma.ticket.update({
     where: { id: ticketId },
     data: {
       status: TicketStatus.Closed,
-      closeReason: reason || null,
-      closedAt: new Date(),
-      lastActivityAt: new Date()
+      closeReason: normalizedReason || null,
+      closedAt,
+      lastActivityAt: closedAt
     }
   });
   await prisma.ticketEvent.create({
@@ -575,24 +736,72 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       ticketId,
       type: "CLOSE",
       actorId,
-      data: reason ? { reason } : undefined
+      data: normalizedReason ? { reason: normalizedReason } : undefined
     }
   });
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
   if (channel && channel.type === ChannelType.GuildText) {
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    const transcriptLines: Array<{ timestamp: number; author: string; content: string }> = [];
     if (messages) {
-      const transcript = messages
+      const sorted = messages
         .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
         .map((message) => {
           const author = message.author ? `${message.author.username}` : "unknown";
-          return `[${new Date(message.createdTimestamp).toISOString()}] ${author}: ${message.content}`;
+          const text = [message.content, ...message.attachments.map((attachment) => attachment.url)]
+            .filter(Boolean)
+            .join("\n");
+          return {
+            timestamp: message.createdTimestamp,
+            author,
+            content: text
+          };
         })
-        .join("\n");
+        .filter((line) => line.content.length > 0);
+      transcriptLines.push(...sorted);
+
+      const transcript = buildTranscriptHtml(ticket.id, transcriptLines);
       await prisma.ticketTranscript.upsert({
         where: { ticketId },
         create: { ticketId, content: transcript },
         update: { content: transcript }
+      });
+
+      const transcriptChannelId = await getTranscriptChannelIdForGuild(ticket.guildId);
+      const transcriptChannel = transcriptChannelId
+        ? await client.channels.fetch(transcriptChannelId).catch(() => null)
+        : null;
+      const destination = transcriptChannel && transcriptChannel.type === ChannelType.GuildText
+        ? transcriptChannel
+        : channel;
+
+      const closedByValue = actorId === "system" ? "System" : `<@${actorId}>`;
+      const transcriptUrl = getDashboardTranscriptUrl(ticket.id);
+      const embed = new EmbedBuilder()
+        .setTitle(`Ticket ${ticket.id} Closed`)
+        .setDescription("Ticket transcript has been logged. Use the button below to view it in the dashboard.")
+        .addFields(
+          { name: "Opened", value: `<t:${Math.floor(ticket.createdAt.getTime() / 1000)}:F>`, inline: true },
+          { name: "Closed", value: `<t:${Math.floor(closedAt.getTime() / 1000)}:F>`, inline: true },
+          { name: "Opened By", value: `<@${ticket.ownerId}>`, inline: true },
+          { name: "Closed By", value: closedByValue, inline: true },
+          { name: "Reason", value: normalizedReason || "No reason provided" }
+        );
+
+      const components = transcriptUrl
+        ? [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("Open Transcript in Dashboard")
+                .setURL(transcriptUrl)
+            )
+          ]
+        : [];
+
+      await destination.send({
+        embeds: [embed],
+        components
       });
     }
     await channel.permissionOverwrites.edit(ticket.ownerId, {
@@ -603,15 +812,21 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         SendMessages: false
       });
     });
-    await channel.send(
-      reason && reason.trim().length > 0
-        ? `Ticket closed by <@${actorId}>. Reason: ${reason}`
-        : `Ticket closed by <@${actorId}>.`
-    );
+    await channel.delete("Ticket closed").catch(() => null);
   }
 };
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    if (
+      (interaction.commandName === "ticket" && interaction.options.getSubcommand() === "switchcategory") ||
+      interaction.commandName === "switchcategory"
+    ) {
+      await autocompleteTeams(interaction);
+    }
+    return;
+  }
+
   const handleOpenCategory = async (
     categoryId: string,
     sourceInteraction: ChatInputCommandInteraction | StringSelectMenuInteraction
@@ -699,23 +914,30 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.showModal(buildCloseModal(ticket.id));
         return;
       }
-      if (sub === "transfer") {
+      if (sub === "switchcategory") {
         const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
         if (!canManage) {
           await interaction.reply({ content: "Only the current claimer can manage this ticket." });
           return;
         }
-        const categories = await getEnabledCategories(ticket.guildId);
-        const row = buildCategorySelect(`ticket-transfer:${ticket.id}`, categories);
-        await interaction.reply({ content: "Select a category to switch to.", components: [row] });
+        const teamId = interaction.options.getString("team", true);
+        try {
+          const result = await switchTicketToTeam(ticket, interaction.user.id, teamId);
+          await interaction.reply({ content: `Ticket switched to ${result.teamName}.` });
+        } catch (error) {
+          if (error instanceof Error && error.message === "team_has_no_category") {
+            await interaction.reply({ content: "That team has no enabled category to switch to." });
+            return;
+          }
+          await interaction.reply({ content: "Unable to switch this ticket right now." });
+        }
         return;
       }
     }
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
-      const isStaff = (await userHasSupportRole(interaction.guildId, roleIds)) ||
-        (await userHasManagementRole(interaction.guildId, roleIds));
+      const isStaff = await userHasSupportRole(interaction.guildId, roleIds);
       if (!isStaff) {
         await interaction.reply({ content: "Not authorized for panels.", ephemeral: true });
         return;
@@ -734,6 +956,33 @@ client.on("interactionCreate", async (interaction) => {
       }
       await publishPanel(panel.id);
       await interaction.reply({ content: "Panel published.", ephemeral: true });
+      return;
+    }
+
+    if (interaction.commandName === "switchcategory") {
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", ephemeral: true });
+        return;
+      }
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+        return;
+      }
+      const teamId = interaction.options.getString("team", true);
+      try {
+        const result = await switchTicketToTeam(ticket, interaction.user.id, teamId);
+        await interaction.reply({ content: `Ticket switched to ${result.teamName}.` });
+      } catch (error) {
+        if (error instanceof Error && error.message === "team_has_no_category") {
+          await interaction.reply({ content: "That team has no enabled category to switch to." });
+          return;
+        }
+        await interaction.reply({ content: "Unable to switch this ticket right now." });
+      }
       return;
     }
   }
@@ -789,8 +1038,8 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     const reason = interaction.fields.getTextInputValue("reason")?.trim() || undefined;
+    await interaction.reply({ content: "Ticket closure confirmed.", flags: MessageFlags.Ephemeral });
     await closeTicket(ticketId, interaction.user.id, reason);
-    await interaction.reply({ content: "Ticket closure confirmed." });
     return;
   }
 
@@ -801,55 +1050,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     await handleOpenCategory(interaction.values[0], interaction);
-    return;
-  }
-
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ticket-transfer:")) {
-    const ticketId = interaction.customId.split(":")[1];
-    const ticket = await getTicketById(ticketId);
-    if (!ticket || !interaction.guildId) {
-      await interaction.reply({ content: "Ticket not found.", ephemeral: true });
-      return;
-    }
-    const member = await interaction.guild?.members.fetch(interaction.user.id);
-    const roleIds = member?.roles.cache.map((role) => role.id) || [];
-    const hasTeamRole = userHasTeamRole(roleIds, ticket);
-    const hasManagementRole = await userHasManagementRole(ticket.guildId, roleIds);
-    if (!hasTeamRole && !hasManagementRole) {
-      await interaction.reply({ content: "Not authorized for this ticket.", ephemeral: true });
-      return;
-    }
-    const categoryId = interaction.values[0];
-    const category = await prisma.ticketCategory.findFirst({
-      where: { id: categoryId, guildId: ticket.guildId },
-      include: { supportTeam: true }
-    });
-    if (!category) {
-      await interaction.reply({ content: "Category not found.", ephemeral: true });
-      return;
-    }
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: { categoryId: category.id, supportTeamId: category.supportTeamId }
-    });
-    await prisma.ticketEvent.create({
-      data: {
-        ticketId: ticket.id,
-        type: "TRANSFER",
-        actorId: interaction.user.id,
-        data: { fromCategoryId: ticket.categoryId, toCategoryId: category.id }
-      }
-    });
-    const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
-    if (channel && channel.type === ChannelType.GuildText) {
-      const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
-      await channel.permissionOverwrites.set(overwrites);
-      await channel.setParent(category.parentChannelId || null).catch(() => null);
-      if (ticket.claimedById) {
-        await applyClaimedPermissions(ticket.id, ticket.claimedById);
-      }
-    }
-    await interaction.reply({ content: "Ticket transferred." });
     return;
   }
 
@@ -902,14 +1102,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     if (action === "transfer") {
-      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-      if (!canManage) {
-        await interaction.reply({ content: "Only the current claimer can manage this ticket." });
-        return;
-      }
-      const categories = await getEnabledCategories(ticket.guildId);
-      const row = buildCategorySelect(`ticket-transfer:${ticketId}`, categories);
-      await interaction.reply({ content: "Select a category to switch to.", components: [row] });
+      await interaction.reply({ content: "Use /ticket switchcategory and pick the target team." });
       return;
     }
     if (action === "close") {
@@ -992,6 +1185,39 @@ internalApp.post("/internal/panels/:id/sync", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "sync_failed" });
   }
+});
+
+internalApp.post("/internal/tickets/force-close-open", async (req, res) => {
+  const secret = String(req.headers["x-internal-secret"] || "");
+  if (!secret || secret !== process.env.BOT_INTERNAL_SECRET) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const guildId = String(req.body?.guildId || "");
+  if (!guildId) {
+    res.status(400).json({ error: "guild_id_missing" });
+    return;
+  }
+  const openTickets = await prisma.ticket.findMany({
+    where: {
+      guildId,
+      status: { in: [TicketStatus.Open, TicketStatus.InProgress, TicketStatus.Waiting] }
+    },
+    select: { id: true }
+  });
+
+  let closedCount = 0;
+  let failedCount = 0;
+  for (const ticket of openTickets) {
+    try {
+      await closeTicket(ticket.id, "system", "Force closed by superuser");
+      closedCount += 1;
+    } catch {
+      failedCount += 1;
+    }
+  }
+
+  res.json({ ok: true, closedCount, failedCount });
 });
 
 const start = async () => {

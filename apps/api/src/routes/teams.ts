@@ -7,8 +7,6 @@ export const teamsRouter = Router();
 
 const teamSchema = z.object({
   name: z.string().min(2).max(64),
-  isManagement: z.boolean().default(false),
-  escalationTeamId: z.string().optional().nullable(),
   roleIds: z.array(z.string().min(1)).default([])
 });
 
@@ -28,8 +26,6 @@ teamsRouter.post("/", requireSession, requireStaff, async (req, res) => {
     data: {
       guildId,
       name: input.name,
-      isManagement: input.isManagement,
-      escalationTeamId: input.escalationTeamId || null,
       roles: {
         create: input.roleIds.map((roleId) => ({ roleId }))
       }
@@ -50,8 +46,6 @@ teamsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
     where: { id, guildId },
     data: {
       name: input.name,
-      isManagement: input.isManagement,
-      escalationTeamId: input.escalationTeamId || null,
       roles: {
         create: input.roleIds.map((roleId) => ({ roleId }))
       }
@@ -61,32 +55,28 @@ teamsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
   res.json({ team });
 });
 
-  teamsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
-    const guildId = String(req.headers["x-guild-id"] || "");
-    const id = String(req.params.id || "");
-    const team = await prisma.supportTeam.findFirst({
-      where: { id, guildId }
-    });
-    if (!team) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-
-    const [categoryCount, ticketCount] = await Promise.all([
-      prisma.ticketCategory.count({ where: { guildId, supportTeamId: id } }),
-      prisma.ticket.count({ where: { guildId, supportTeamId: id } })
-    ]);
-
-    if (categoryCount > 0 || ticketCount > 0) {
-      res.status(409).json({ error: "team_in_use" });
-      return;
-    }
-
-    await prisma.supportTeamRole.deleteMany({ where: { teamId: id } });
-    await prisma.supportTeam.updateMany({
-      where: { guildId, escalationTeamId: id },
-      data: { escalationTeamId: null }
-    });
-    await prisma.supportTeam.delete({ where: { id } });
-    res.json({ ok: true });
+teamsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
+  const guildId = String(req.headers["x-guild-id"] || "");
+  const id = String(req.params.id || "");
+  const team = await prisma.supportTeam.findFirst({
+    where: { id, guildId }
   });
+  if (!team) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  const [categoryCount, ticketCount] = await Promise.all([
+    prisma.ticketCategory.count({ where: { guildId, supportTeamId: id } }),
+    prisma.ticket.count({ where: { guildId, supportTeamId: id } })
+  ]);
+
+  if (categoryCount > 0 || ticketCount > 0) {
+    res.status(409).json({ error: "team_in_use" });
+    return;
+  }
+
+  await prisma.supportTeamRole.deleteMany({ where: { teamId: id } });
+  await prisma.supportTeam.delete({ where: { id } });
+  res.json({ ok: true });
+});

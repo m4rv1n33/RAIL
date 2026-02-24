@@ -29,6 +29,18 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
         details = "Discord membership lookup is unavailable right now. Check bot access and then re-login.";
       } else if (body?.error === "discord_lookup_failed") {
         details = "Discord member lookup failed. Please try again in a moment.";
+      } else if (body?.error === "discord_role_lookup_failed") {
+        details = "Discord role lookup failed. Please check bot permissions and try again.";
+      } else if (body?.error === "superuser_only") {
+        details = "Only the superuser account can delete all transcripts.";
+      } else if (body?.error === "bot_internal_missing") {
+        details = "Bot internal API is not configured. Set BOT_INTERNAL_URL and BOT_INTERNAL_SECRET in API environment.";
+      } else if (body?.error === "bot_force_close_failed") {
+        details = "Bot failed to force-close open tickets.";
+      } else if (body?.error === "bot_sync_failed") {
+        details = "Bot failed to publish/sync the panel message.";
+      } else if (body?.error === "panel_field_too_long") {
+        details = "Panel title or description is too long for current database schema. Run latest DB migration and try again.";
       } else if (typeof body?.error === "string") {
         details = body.error;
       }
