@@ -76,6 +76,7 @@ model TicketPanelCategory {
 
 model Ticket {
   id             String        @id @default(uuid())
+  ticketNumber   Int           @unique @default(autoincrement())
   guildId        String
   categoryId     String
   supportTeamId  String

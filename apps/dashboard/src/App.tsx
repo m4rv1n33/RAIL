@@ -35,6 +35,7 @@ type DiscordChannel = { id: string; name: string; type: number; parentId?: strin
 type GuildSettings = { transcriptChannelId?: string };
 type TranscriptSummary = {
   ticketId: string;
+  ticketLabel?: string;
   openedById: string;
   openedByName?: string;
   closedById?: string | null;
@@ -45,6 +46,7 @@ type TranscriptSummary = {
 };
 type TranscriptDetail = {
   ticketId: string;
+  ticketLabel?: string;
   openedById: string;
   openedByName?: string;
   closedById?: string | null;
@@ -380,7 +382,7 @@ export const App = () => {
       <div className="page">
         <header className="hero">
           <div>
-            <h1>Transcript {transcriptTicketId}</h1>
+            <h1>Transcript {activeTranscript?.ticketLabel || (transcriptTicketId ? `ticket-${transcriptTicketId.slice(0, 6)}` : "")}</h1>
             <p>Opened by <strong>{activeTranscript?.openedByName || activeTranscript?.openedById || "unknown"}</strong> • Closed by <strong>{activeTranscript?.closedByName || activeTranscript?.closedById || "unknown"}</strong></p>
           </div>
           <a className="button secondary" href="#/transcripts">
@@ -508,14 +510,14 @@ export const App = () => {
             <h2>{editingCategoryId ? "Edit Category" : "Create Category"}</h2>
             <label>
               Name
-              <input value={categoryName} onChange={(e) => setCategoryName(e.target.value)} placeholder="e.g. Billing" />
+              <input value={categoryName} onChange={(e) => setCategoryName(e.target.value)} placeholder="e.g. Internal Affairs" />
             </label>
             <label>
               Description
               <textarea
                 value={categoryDescription}
                 onChange={(e) => setCategoryDescription(e.target.value)}
-                placeholder="Add a detailed description (supports line breaks)"
+                placeholder="Add a detailed description"
               />
             </label>
             <label>
@@ -732,7 +734,7 @@ export const App = () => {
               {transcripts.map((entry) => (
                 <div key={entry.ticketId} className="item">
                   <div>
-                    <h3>Ticket {entry.ticketId}</h3>
+                    <h3>{entry.ticketLabel || `ticket-${entry.ticketId.slice(0, 6)}`}</h3>
                     <div className="meta">Opened by: {entry.openedByName || entry.openedById}</div>
                     <div className="meta">Closed by: {entry.closedByName || entry.closedById || "unknown"}</div>
                     <div className="meta">Reason: {entry.reason || "No reason provided"}</div>

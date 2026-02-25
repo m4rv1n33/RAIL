@@ -1,8 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
-import { prisma } from "@rail/db";
-import { fetchCurrentUserGuildMember, fetchGuildMember } from "../services/discord.js";
+import { fetchCurrentUserGuild, fetchCurrentUserGuildMember, fetchGuildMember, fetchGuildRoles } from "../services/discord.js";
 
-const BYPASS_USER_ID = process.env.DEV_BYPASS_USER_ID || "1163826327841939506";
+const BYPASS_USER_ID = process.env.DEV_BYPASS_USER_ID || "";
 
 declare module "express-session" {
   interface SessionData {
@@ -68,15 +67,40 @@ export const requireStaff = async (req: Request, res: Response, next: NextFuncti
     res.status(403).json({ error: "not_in_guild" });
     return;
   }
-  const teamRoles = await prisma.supportTeamRole.findMany({
-    where: {
-      team: { guildId }
+
+  const ADMIN_PERMISSION = 0x8n;
+  let isAdmin = false;
+
+  try {
+    const guild = await fetchCurrentUserGuild(user.accessToken, guildId);
+    const permissions = BigInt(guild?.permissions || "0");
+    if ((permissions & ADMIN_PERMISSION) === ADMIN_PERMISSION) {
+      isAdmin = true;
     }
-  });
-  const allowedRoleIds = new Set(teamRoles.map((role) => role.roleId));
-  const hasRole = member.roles.some((roleId: string) => allowedRoleIds.has(roleId));
-  if (!hasRole) {
-    res.status(403).json({ error: "not_staff" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "discord_user_guild_lookup_failed";
+    if (message === "user_token_invalid") {
+      res.status(401).json({ error: "reauth_required" });
+      return;
+    }
+  }
+
+  if (!isAdmin) {
+    try {
+      const roles = await fetchGuildRoles(guildId);
+      const roleIds = new Set<string>([...member.roles, guildId]);
+      const aggregatePermissions = roles
+        .filter((role) => roleIds.has(role.id))
+        .reduce((acc, role) => acc | BigInt(role.permissions || "0"), 0n);
+      isAdmin = (aggregatePermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+    } catch {
+      res.status(502).json({ error: "discord_lookup_failed" });
+      return;
+    }
+  }
+
+  if (!isAdmin) {
+    res.status(403).json({ error: "admin_required" });
     return;
   }
   next();

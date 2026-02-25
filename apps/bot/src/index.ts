@@ -61,6 +61,130 @@ type ModalSchema = {
   fields: ModalField[];
 };
 
+type SuperuserRecord = {
+  user_id: string;
+  username?: string;
+  display_name?: string;
+  designation?: string;
+  role?: string;
+  granted_at?: string;
+};
+
+const SUPERUSER_ROLE_PRIORITY: Record<string, number> = {
+  owner: 0,
+  admin: 1,
+  maintainer: 2,
+  operator: 3,
+  support: 4
+};
+
+const getConfiguredSuperusers = (): SuperuserRecord[] => {
+  const records: SuperuserRecord[] = [];
+  const json = (process.env.SUPERUSERS_JSON || "").trim();
+  if (json) {
+    try {
+      const parsed = JSON.parse(json) as unknown;
+      if (Array.isArray(parsed)) {
+        parsed.forEach((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return;
+          }
+          const candidate = entry as {
+            user_id?: unknown;
+            display_name?: unknown;
+            username?: unknown;
+            designation?: unknown;
+            superuser_type?: unknown;
+            type?: unknown;
+            role?: unknown;
+            permission_level?: unknown;
+            granted_at?: unknown;
+          };
+          if (typeof candidate.user_id !== "string" || !candidate.user_id.trim()) {
+            return;
+          }
+          records.push({
+            user_id: candidate.user_id.trim(),
+            username: typeof candidate.username === "string" ? candidate.username.trim() : undefined,
+            display_name:
+              typeof candidate.display_name === "string" ? candidate.display_name.trim() : undefined,
+            designation:
+              typeof candidate.designation === "string"
+                ? candidate.designation.trim()
+                : typeof candidate.superuser_type === "string"
+                  ? candidate.superuser_type.trim()
+                  : typeof candidate.type === "string"
+                    ? candidate.type.trim()
+                    : undefined,
+            role:
+              typeof candidate.role === "string"
+                ? candidate.role.trim()
+                : typeof candidate.permission_level === "string"
+                  ? candidate.permission_level.trim()
+                  : undefined,
+            granted_at: typeof candidate.granted_at === "string" ? candidate.granted_at.trim() : undefined
+          });
+        });
+      }
+    } catch {
+      // Fall back to DEV_BYPASS_USER_ID-only mode.
+    }
+  }
+
+  if (records.length === 0) {
+    const fallbackIds = (process.env.DEV_BYPASS_USER_ID || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    fallbackIds.forEach((id) => records.push({ user_id: id, role: "admin" }));
+  }
+
+  const byId = new Map<string, SuperuserRecord>();
+  records.forEach((record) => {
+    if (!byId.has(record.user_id)) {
+      byId.set(record.user_id, record);
+    }
+  });
+
+  const normalized = [...byId.values()];
+  normalized.sort((left, right) => {
+    const leftPrimary = (left.designation || "").toLowerCase().includes("primary") ? 0 : 1;
+    const rightPrimary = (right.designation || "").toLowerCase().includes("primary") ? 0 : 1;
+    if (leftPrimary !== rightPrimary) {
+      return leftPrimary - rightPrimary;
+    }
+    const leftRole = (left.role || "").toLowerCase();
+    const rightRole = (right.role || "").toLowerCase();
+    const leftPriority = SUPERUSER_ROLE_PRIORITY[leftRole] ?? 99;
+    const rightPriority = SUPERUSER_ROLE_PRIORITY[rightRole] ?? 99;
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+    const leftGranted = left.granted_at ? Date.parse(left.granted_at) : Number.POSITIVE_INFINITY;
+    const rightGranted = right.granted_at ? Date.parse(right.granted_at) : Number.POSITIVE_INFINITY;
+    if (leftGranted !== rightGranted) {
+      return leftGranted - rightGranted;
+    }
+    return left.user_id.localeCompare(right.user_id);
+  });
+
+  return normalized;
+};
+
+const isConfiguredSuperuser = (userId: string, records: SuperuserRecord[]) =>
+  records.some((record) => record.user_id === userId);
+
+const toDiscordTimestamp = (value?: string) => {
+  if (!value) {
+    return null;
+  }
+  const unix = Math.floor(Date.parse(value) / 1000);
+  if (!Number.isFinite(unix) || unix <= 0) {
+    return null;
+  }
+  return `<t:${unix}:F>`;
+};
+
 const getSettingsFilePath = () => {
   const candidates = [
     path.resolve(process.cwd(), "data", "guild-settings.json"),
@@ -350,6 +474,9 @@ const createTicket = async (
     parent: category.parentChannelId || undefined,
     permissionOverwrites: overwrites
   });
+  if (category.parentChannelId && channel.parentId !== category.parentChannelId) {
+    await channel.setParent(category.parentChannelId);
+  }
   const ticket = await prisma.ticket.create({
     data: {
       id: ticketId,
@@ -361,22 +488,22 @@ const createTicket = async (
       channelId: channel.id
     }
   });
+  const ticketLabel = getTicketDisplayLabel(ticket);
+  if (channel.name !== ticketLabel) {
+    await channel.setName(ticketLabel).catch(() => null);
+  }
   const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`ticket:claim:${ticket.id}`)
       .setLabel("Claim")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`ticket:transfer:${ticket.id}`)
-      .setLabel("Switch Category")
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
       .setCustomId(`ticket:close:${ticket.id}`)
       .setLabel("Close")
       .setStyle(ButtonStyle.Danger)
   );
   const embed = new EmbedBuilder()
-    .setTitle(`Ticket ${ticket.id}`)
+    .setTitle(ticketLabel)
     .setDescription("A staff member will be with you shortly.");
   const roleMentions = team.roles.map((role) => `<@&${role.roleId}>`).join(" ");
   await channel.send({
@@ -419,6 +546,15 @@ const getEnabledCategories = async (guildId: string) => {
   });
 };
 
+const formatTicketChannelName = (ticketNumber: number) => `ticket-${String(ticketNumber).padStart(4, "0")}`;
+
+const getTicketDisplayLabel = (ticket: { ticketNumber?: number | null; id: string }) => {
+  if (typeof ticket.ticketNumber === "number") {
+    return formatTicketChannelName(ticket.ticketNumber);
+  }
+  return `ticket-${ticket.id.slice(0, 6)}`;
+};
+
 const buildCategorySelect = (customId: string, categories: { id: string; name: string }[]) => {
   const select = new StringSelectMenuBuilder()
     .setCustomId(customId)
@@ -448,7 +584,7 @@ const userHasSupportRole = async (guildId: string, roleIds: string[]) => {
   return roleIds.some((roleId) => allowedRoleIds.has(roleId));
 };
 
-const BYPASS_USER_ID = "1163826327841939506";
+const BYPASS_USER_ID = process.env.DEV_BYPASS_USER_ID || "";
 
 const isAuthorizedForTicket = async (userId: string, guildId: string, roleIds: string[], ticket?: Awaited<ReturnType<typeof getTicketById>>) => {
   // Bypass for special user
@@ -508,7 +644,13 @@ const switchTicketToTeam = async (
 
   await prisma.ticket.update({
     where: { id: ticket.id },
-    data: { categoryId: category.id, supportTeamId: category.supportTeamId }
+    data: {
+      categoryId: category.id,
+      supportTeamId: category.supportTeamId,
+      claimedById: null,
+      status: TicketStatus.Open,
+      lastActivityAt: new Date()
+    }
   });
   await prisma.ticketEvent.create({
     data: {
@@ -524,9 +666,14 @@ const switchTicketToTeam = async (
     const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
     await channel.permissionOverwrites.set(overwrites);
     await channel.setParent(category.parentChannelId || null).catch(() => null);
-    if (ticket.claimedById) {
-      await applyClaimedPermissions(ticket.id, ticket.claimedById);
-    }
+    const switchedTeam = await prisma.supportTeam.findFirst({
+      where: { id: teamId },
+      include: { roles: true }
+    });
+    const mentions = switchedTeam?.roles.map((role) => `<@&${role.roleId}>`).join(" ") || "";
+    await channel.send({
+      content: `${mentions} Ticket switched to **${switchedTeam?.name || "selected team"}** by <@${actorId}>. Ticket has been unclaimed.`
+    });
   }
 
   const team = await prisma.supportTeam.findFirst({ where: { id: teamId } });
@@ -570,34 +717,8 @@ const registerCommands = async () => {
       .setDescription("Ticket actions")
       .addSubcommand((sub) => sub.setName("open").setDescription("Open a ticket"))
       .addSubcommand((sub) => sub.setName("claim").setDescription("Claim the current ticket"))
-      .addSubcommand((sub) => sub.setName("close").setDescription("Close the current ticket"))
-      .addSubcommand((sub) =>
-        sub
-          .setName("status").setDescription("Update ticket status")
-          .addStringOption((option) =>
-            option
-              .setName("state")
-              .setDescription("New status")
-              .setRequired(true)
-              .addChoices(
-                { name: "Open", value: TicketStatus.Open },
-                { name: "In Progress", value: TicketStatus.InProgress },
-                { name: "Waiting", value: TicketStatus.Waiting }
-              )
-          )
-      )
-      .addSubcommand((sub) =>
-        sub
-          .setName("switchcategory")
-          .setDescription("Switch this ticket to another team's category")
-          .addStringOption((option) =>
-            option
-              .setName("team")
-              .setDescription("Target support team")
-              .setRequired(true)
-              .setAutocomplete(true)
-          )
-      ),
+      .addSubcommand((sub) => sub.setName("unclaim").setDescription("Unclaim the current ticket"))
+      .addSubcommand((sub) => sub.setName("close").setDescription("Close the current ticket")),
     new SlashCommandBuilder()
       .setName("panel")
       .setDescription("Panel actions")
@@ -621,20 +742,23 @@ const registerCommands = async () => {
           .setDescription("Target support team")
           .setRequired(true)
           .setAutocomplete(true)
-      )
+      ),
+    new SlashCommandBuilder()
+      .setName("rename")
+      .setDescription("Rename current ticket channel")
+      .addStringOption((option) =>
+        option
+          .setName("name")
+          .setDescription("Optional channel name (letters, numbers, dashes)")
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName("superuser")
+      .setDescription("Display current superuser access information")
+  
   ].map((command) => command.toJSON());
   const rest = new REST({ version: "10" }).setToken(token);
   await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
-};
-
-const setTicketStatus = async (ticketId: string, status: string, actorId: string) => {
-  await prisma.ticket.update({
-    where: { id: ticketId },
-    data: { status, lastActivityAt: new Date() }
-  });
-  await prisma.ticketEvent.create({
-    data: { ticketId, type: `STATUS_${status}`, actorId }
-  });
 };
 
 const escapeHtml = (value: string) =>
@@ -646,7 +770,7 @@ const escapeHtml = (value: string) =>
     .replaceAll("'", "&#39;");
 
 const buildTranscriptHtml = (
-  ticketId: string,
+  ticketLabel: string,
   lines: Array<{ timestamp: number; author: string; content: string }>
 ) => {
   const rows = lines
@@ -665,7 +789,7 @@ const buildTranscriptHtml = (
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ticket Transcript ${escapeHtml(ticketId)}</title>
+    <title>Ticket Transcript ${escapeHtml(ticketLabel)}</title>
     <style>
       :root {
         color-scheme: light;
@@ -696,7 +820,7 @@ const buildTranscriptHtml = (
   <body>
     <main class="wrap">
       <section class="card">
-        <h1>Ticket Transcript • ${escapeHtml(ticketId)}</h1>
+        <h1>Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
         ${rows || "<p>No messages captured.</p>"}
       </section>
     </main>
@@ -705,7 +829,12 @@ const buildTranscriptHtml = (
 };
 
 const getDashboardTranscriptUrl = (ticketId: string) => {
-  const base = (process.env.DASHBOARD_ORIGIN || process.env.DASHBOARD_URL || "").trim();
+  const base = (
+    process.env.DASHBOARD_ORIGIN ||
+    process.env.DASHBOARD_URL ||
+    process.env.PUBLIC_DASHBOARD_URL ||
+    "http://localhost:5173"
+  ).trim();
   if (!base) {
     return "";
   }
@@ -740,6 +869,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
     }
   });
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  const ticketLabel = getTicketDisplayLabel(ticket);
   if (channel && channel.type === ChannelType.GuildText) {
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     const transcriptLines: Array<{ timestamp: number; author: string; content: string }> = [];
@@ -760,7 +890,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         .filter((line) => line.content.length > 0);
       transcriptLines.push(...sorted);
 
-      const transcript = buildTranscriptHtml(ticket.id, transcriptLines);
+      const transcript = buildTranscriptHtml(ticketLabel, transcriptLines);
       await prisma.ticketTranscript.upsert({
         where: { ticketId },
         create: { ticketId, content: transcript },
@@ -778,7 +908,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       const closedByValue = actorId === "system" ? "System" : `<@${actorId}>`;
       const transcriptUrl = getDashboardTranscriptUrl(ticket.id);
       const embed = new EmbedBuilder()
-        .setTitle(`Ticket ${ticket.id} Closed`)
+        .setTitle(`${ticketLabel} Closed`)
         .setDescription("Ticket transcript has been logged. Use the button below to view it in the dashboard.")
         .addFields(
           { name: "Opened", value: `<t:${Math.floor(ticket.createdAt.getTime() / 1000)}:F>`, inline: true },
@@ -818,10 +948,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isAutocomplete()) {
-    if (
-      (interaction.commandName === "ticket" && interaction.options.getSubcommand() === "switchcategory") ||
-      interaction.commandName === "switchcategory"
-    ) {
+    if (interaction.commandName === "switchcategory") {
       await autocompleteTeams(interaction);
     }
     return;
@@ -832,19 +959,19 @@ client.on("interactionCreate", async (interaction) => {
     sourceInteraction: ChatInputCommandInteraction | StringSelectMenuInteraction
   ) => {
     if (!sourceInteraction.guildId) {
-      await sourceInteraction.reply({ content: "Guild not found.", ephemeral: true });
+      await sourceInteraction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const existing = await findOpenTicket(sourceInteraction.guildId, sourceInteraction.user.id, categoryId);
     if (existing) {
-      await sourceInteraction.reply({ content: "You already have an open ticket in this category.", ephemeral: true });
+      await sourceInteraction.reply({ content: "You already have an open ticket in this category.", flags: MessageFlags.Ephemeral });
       return;
     }
     const category = await prisma.ticketCategory.findFirst({
       where: { id: categoryId, guildId: sourceInteraction.guildId, enabled: true }
     });
     if (!category) {
-      await sourceInteraction.reply({ content: "Category not found.", ephemeral: true });
+      await sourceInteraction.reply({ content: "Category not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const modalSchema = parseModalSchema(category.modalSchema);
@@ -853,20 +980,89 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
-    await sourceInteraction.reply({ content: `Ticket created: <#${ticket.channelId}>.` });
+    await sourceInteraction.reply({ content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.` });
   };
 
   if (interaction.isChatInputCommand()) {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Guild not found.", ephemeral: true });
+      await interaction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
       return;
     }
+
+    if (interaction.commandName === "superuser") {
+      const records = getConfiguredSuperusers();
+      const requesterIsSuperuser = isConfiguredSuperuser(interaction.user.id, records);
+      const showIdsForSuperuser = (process.env.SUPERUSER_SHOW_IDS || "true").toLowerCase() !== "false";
+
+      const profileFields = records.slice(0, 20).map((record, index) => {
+        const mention = `<@${record.user_id}>`;
+        const displayName = record.username?.trim() || record.display_name?.trim() || mention;
+        const designation = record.designation?.trim();
+        const role = record.role?.trim() || "Unknown Role";
+        const fieldTitle = (designation || role || displayName).slice(0, 256) || `Superuser ${index + 1}`;
+        const grantedAt = toDiscordTimestamp(record.granted_at) || "Not set";
+        const lines = [`**${displayName}**`];
+        if (designation) {
+          lines.push(`Designation: ${designation}`);
+        }
+        lines.push(`Role: ${role}`);
+        lines.push(`Granted on: ${grantedAt}`);
+        if (requesterIsSuperuser && showIdsForSuperuser) {
+          lines.push(`User ID: ${record.user_id}`);
+        }
+        return {
+          name: fieldTitle,
+          value: lines.join("\n"),
+          inline: false
+        };
+      });
+
+      const accentColor = requesterIsSuperuser ? 0xf1c40f : 0xe74c3c;
+
+      const embed = new EmbedBuilder()
+        .setColor(accentColor)
+        .setTitle("Superuser Access")
+        .setDescription(
+          requesterIsSuperuser
+            ? "You are recognized as a superuser. Full privilege metadata is visible below."
+            : "You do not have superuser access. Visible list is intentionally redacted."
+        )
+        .addFields(
+          {
+            name: "Requester",
+            value: `<@${interaction.user.id}>`,
+            inline: true
+          },
+          {
+            name: "Configured Superusers",
+            value: `${records.length}`,
+            inline: true
+          },
+          {
+            name: "Visibility Mode",
+            value: requesterIsSuperuser ? "Full" : "Redacted",
+            inline: true
+          }
+        )
+        .setFooter({ text: "Superusers have elevated privileges." })
+        .setTimestamp(new Date());
+
+      if (profileFields.length > 0) {
+        embed.addFields(profileFields);
+      } else {
+        embed.addFields({ name: "Superusers", value: "No superusers configured." });
+      }
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
     if (interaction.commandName === "ticket") {
       const sub = interaction.options.getSubcommand();
       if (sub === "open") {
         const categories = await getEnabledCategories(interaction.guildId);
         if (categories.length === 0) {
-          await interaction.reply({ content: "No categories available.", ephemeral: true });
+          await interaction.reply({ content: "No categories available.", flags: MessageFlags.Ephemeral });
           return;
         }
         if (categories.length === 1) {
@@ -874,19 +1070,19 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         const row = buildCategorySelect(`ticket-open:${interaction.user.id}`, categories);
-        await interaction.reply({ content: "Select a category to open.", components: [row], ephemeral: true });
+        await interaction.reply({ content: "Select a category to open.", components: [row], flags: MessageFlags.Ephemeral });
         return;
       }
       const ticket = await getTicketByChannel(interaction.channelId);
       if (!ticket) {
-        await interaction.reply({ content: "Use this in a ticket channel.", ephemeral: true });
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
         return;
       }
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
       const isAuthorized = await isAuthorizedForTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
       if (!isAuthorized) {
-        await interaction.reply({ content: "Not authorized for this ticket.", ephemeral: true });
+        await interaction.reply({ content: "Not authorized for this ticket.", flags: MessageFlags.Ephemeral });
         return;
       }
       if (sub === "claim") {
@@ -905,6 +1101,34 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `Ticket claimed by <@${interaction.user.id}>.` });
         return;
       }
+      if (sub === "unclaim") {
+        if (!ticket.claimedById) {
+          await interaction.reply({ content: "This ticket is not currently claimed." });
+          return;
+        }
+        if (ticket.claimedById !== interaction.user.id) {
+          await interaction.reply({ content: "Only the current claimer can unclaim this ticket." });
+          return;
+        }
+        await prisma.ticket.update({
+          where: { id: ticket.id },
+          data: {
+            claimedById: null,
+            status: TicketStatus.Open,
+            lastActivityAt: new Date()
+          }
+        });
+        const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+        if (channel && channel.type === ChannelType.GuildText) {
+          const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, ticket.supportTeamId);
+          await channel.permissionOverwrites.set(overwrites);
+        }
+        await prisma.ticketEvent.create({
+          data: { ticketId: ticket.id, type: "UNCLAIM", actorId: interaction.user.id }
+        });
+        await interaction.reply({ content: `Ticket unclaimed by <@${interaction.user.id}>.` });
+        return;
+      }
       if (sub === "close") {
         const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
         if (!canManage) {
@@ -914,62 +1138,44 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.showModal(buildCloseModal(ticket.id));
         return;
       }
-      if (sub === "switchcategory") {
-        const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-        if (!canManage) {
-          await interaction.reply({ content: "Only the current claimer can manage this ticket." });
-          return;
-        }
-        const teamId = interaction.options.getString("team", true);
-        try {
-          const result = await switchTicketToTeam(ticket, interaction.user.id, teamId);
-          await interaction.reply({ content: `Ticket switched to ${result.teamName}.` });
-        } catch (error) {
-          if (error instanceof Error && error.message === "team_has_no_category") {
-            await interaction.reply({ content: "That team has no enabled category to switch to." });
-            return;
-          }
-          await interaction.reply({ content: "Unable to switch this ticket right now." });
-        }
-        return;
-      }
     }
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
       const isStaff = await userHasSupportRole(interaction.guildId, roleIds);
       if (!isStaff) {
-        await interaction.reply({ content: "Not authorized for panels.", ephemeral: true });
+        await interaction.reply({ content: "Not authorized for panels.", flags: MessageFlags.Ephemeral });
         return;
       }
       const channel = interaction.options.getChannel("channel") || interaction.channel;
       if (!channel || channel.type !== ChannelType.GuildText) {
-        await interaction.reply({ content: "Select a text channel.", ephemeral: true });
+        await interaction.reply({ content: "Select a text channel.", flags: MessageFlags.Ephemeral });
         return;
       }
       const panel = await prisma.ticketPanel.findFirst({
         where: { guildId: interaction.guildId, channelId: channel.id, isActive: true }
       });
       if (!panel) {
-        await interaction.reply({ content: "Panel not found for this channel.", ephemeral: true });
+        await interaction.reply({ content: "Panel not found for this channel.", flags: MessageFlags.Ephemeral });
         return;
       }
       await publishPanel(panel.id);
-      await interaction.reply({ content: "Panel published.", ephemeral: true });
+      await interaction.reply({ content: "Panel published.", flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (interaction.commandName === "switchcategory") {
       const ticket = await getTicketByChannel(interaction.channelId);
       if (!ticket) {
-        await interaction.reply({ content: "Use this in a ticket channel.", ephemeral: true });
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
         return;
       }
-      const member = await interaction.guild?.members.fetch(interaction.user.id);
-      const roleIds = member?.roles.cache.map((role) => role.id) || [];
-      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-      if (!canManage) {
-        await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+      if (!ticket.claimedById) {
+        await interaction.reply({ content: "This ticket must be claimed before switching category." });
+        return;
+      }
+      if (ticket.claimedById !== interaction.user.id) {
+        await interaction.reply({ content: "Only the current claimer can switch category." });
         return;
       }
       const teamId = interaction.options.getString("team", true);
@@ -990,24 +1196,24 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isModalSubmit() && interaction.customId.startsWith("ticket-modal:")) {
     const categoryId = interaction.customId.split(":")[1];
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Guild not found.", ephemeral: true });
+      await interaction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const existing = await findOpenTicket(interaction.guildId, interaction.user.id, categoryId);
     if (existing) {
-      await interaction.reply({ content: "You already have an open ticket in this category.", ephemeral: true });
+      await interaction.reply({ content: "You already have an open ticket in this category.", flags: MessageFlags.Ephemeral });
       return;
     }
     const category = await prisma.ticketCategory.findFirst({
       where: { id: categoryId, guildId: interaction.guildId, enabled: true }
     });
     if (!category) {
-      await interaction.reply({ content: "Category not found.", ephemeral: true });
+      await interaction.reply({ content: "Category not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const modalSchema = parseModalSchema(category.modalSchema);
     if (!modalSchema) {
-      await interaction.reply({ content: "Modal is no longer available.", ephemeral: true });
+      await interaction.reply({ content: "Modal is no longer available.", flags: MessageFlags.Ephemeral });
       return;
     }
     const modalData: Record<string, string> = {};
@@ -1015,7 +1221,7 @@ client.on("interactionCreate", async (interaction) => {
       modalData[field.id] = interaction.fields.getTextInputValue(field.id);
     }
     const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
-    await interaction.reply({ content: `Ticket created: <#${ticket.channelId}>.` });
+    await interaction.reply({ content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.` });
     return;
   }
 
@@ -1023,11 +1229,11 @@ client.on("interactionCreate", async (interaction) => {
     const ticketId = interaction.customId.split(":")[1];
     const ticket = await getTicketById(ticketId);
     if (!ticket) {
-      await interaction.reply({ content: "Ticket not found.", ephemeral: true });
+      await interaction.reply({ content: "Ticket not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Guild not found.", ephemeral: true });
+      await interaction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const member = await interaction.guild?.members.fetch(interaction.user.id);
@@ -1046,7 +1252,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ticket-open:")) {
     const userId = interaction.customId.split(":")[1];
     if (userId !== interaction.user.id) {
-      await interaction.reply({ content: "Not authorized.", ephemeral: true });
+      await interaction.reply({ content: "Not authorized.", flags: MessageFlags.Ephemeral });
       return;
     }
     await handleOpenCategory(interaction.values[0], interaction);
@@ -1059,14 +1265,46 @@ client.on("interactionCreate", async (interaction) => {
       where: { id: panelId, isActive: true }
     });
     if (!panel) {
-      await interaction.reply({ content: "Panel not found.", ephemeral: true });
+      await interaction.reply({ content: "Panel not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const categoryId = interaction.values[0];
     try {
-      await handleOpenCategory(categoryId, interaction);
+      if (!interaction.guildId) {
+        await interaction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const existing = await findOpenTicket(interaction.guildId, interaction.user.id, categoryId);
+      if (existing) {
+        await interaction.reply({ content: "You already have an open ticket in this category.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const category = await prisma.ticketCategory.findFirst({
+        where: { id: categoryId, guildId: interaction.guildId, enabled: true }
+      });
+      if (!category) {
+        await interaction.reply({ content: "Category not found.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const modalSchema = parseModalSchema(category.modalSchema);
+      if (modalSchema) {
+        await interaction.showModal(buildTicketModal(categoryId, modalSchema));
+        return;
+      }
+      await interaction.deferUpdate();
+      const ticket = await createTicket(interaction.guildId, interaction.user.id, category);
+      const refreshed = await buildPanelEmbed(panel.id);
+      await interaction.editReply({ embeds: [refreshed.embed], components: refreshed.components });
+      await interaction.followUp({
+        content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+        flags: MessageFlags.Ephemeral
+      });
     } catch {
-      await interaction.reply({ content: "Unable to create ticket.", ephemeral: true });
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: "Unable to create ticket.", flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.reply({ content: "Unable to create ticket.", flags: MessageFlags.Ephemeral });
+      }
     }
     return;
   }
@@ -1075,14 +1313,14 @@ client.on("interactionCreate", async (interaction) => {
     const [_, action, ticketId] = interaction.customId.split(":");
     const ticket = await getTicketById(ticketId);
     if (!ticket) {
-      await interaction.reply({ content: "Ticket not found.", ephemeral: true });
+      await interaction.reply({ content: "Ticket not found.", flags: MessageFlags.Ephemeral });
       return;
     }
     const member = await interaction.guild?.members.fetch(interaction.user.id);
     const roleIds = member?.roles.cache.map((role) => role.id) || [];
     const isAuthorized = await isAuthorizedForTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
     if (!isAuthorized) {
-      await interaction.reply({ content: "Not authorized for this ticket.", ephemeral: true });
+      await interaction.reply({ content: "Not authorized for this ticket.", flags: MessageFlags.Ephemeral });
       return;
     }
     if (action === "claim") {
@@ -1101,10 +1339,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `Ticket claimed by <@${interaction.user.id}>.` });
       return;
     }
-    if (action === "transfer") {
-      await interaction.reply({ content: "Use /ticket switchcategory and pick the target team." });
-      return;
-    }
     if (action === "close") {
       const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
       if (!canManage) {
@@ -1114,6 +1348,46 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.showModal(buildCloseModal(ticketId));
       return;
     }
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
+    const ticket = await getTicketByChannel(interaction.channelId);
+    if (!ticket) {
+      await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const member = await interaction.guild?.members.fetch(interaction.user.id);
+    const roleIds = member?.roles.cache.map((role) => role.id) || [];
+    const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+    if (!canManage) {
+      await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+      return;
+    }
+    const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.reply({ content: "Ticket channel not found." });
+      return;
+    }
+    const customNameRaw = interaction.options.getString("name")?.trim() || "";
+    const customName = customNameRaw
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    const baseName = getTicketDisplayLabel(ticket);
+    const nextName = customName || baseName;
+    await channel.setName(nextName);
+    await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
+    await prisma.ticketEvent.create({
+      data: {
+        ticketId: ticket.id,
+        type: "RENAME",
+        actorId: interaction.user.id,
+        data: { name: nextName }
+      }
+    });
+    await interaction.reply({ content: `Ticket renamed to **${nextName}**.` });
+    return;
   }
 });
 

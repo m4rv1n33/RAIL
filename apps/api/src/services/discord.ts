@@ -91,6 +91,23 @@ export const fetchCurrentUserGuildMember = async (accessToken: string, guildId: 
   return response.json();
 };
 
+export const fetchCurrentUserGuild = async (accessToken: string, guildId: string) => {
+  if (!accessToken) {
+    throw new Error("user_token_missing");
+  }
+  const response = await fetch(`${apiBase}/users/@me/guilds`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (response.status === 401) {
+    throw new Error("user_token_invalid");
+  }
+  if (!response.ok) {
+    throw new Error("discord_user_guild_lookup_failed");
+  }
+  const guilds = (await response.json()) as Array<{ id: string; permissions?: string }>;
+  return guilds.find((guild) => guild.id === guildId) || null;
+};
+
 export const fetchGuildChannels = async (guildId: string) => {
   const token = process.env.DISCORD_BOT_TOKEN || "";
   if (!token) {
@@ -128,5 +145,5 @@ export const fetchGuildRoles = async (guildId: string) => {
   if (!response.ok) {
     throw new Error("discord_role_lookup_failed");
   }
-  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean }>>;
+  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean; permissions?: string }>>;
 };

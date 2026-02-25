@@ -5,7 +5,13 @@ import { fetchDiscordUserById } from "../services/discord.js";
 import { forceCloseOpenTickets } from "../services/tickets.js";
 
 export const transcriptsRouter = Router();
-const SUPERUSER_ID = process.env.DEV_BYPASS_USER_ID || "1163826327841939506";
+const SUPERUSER_ID = process.env.DEV_BYPASS_USER_ID || "";
+const formatTicketLabel = (ticketNumber: number | null | undefined, ticketId: string) => {
+  if (typeof ticketNumber === "number") {
+    return `ticket-${String(ticketNumber).padStart(4, "0")}`;
+  }
+  return `ticket-${ticketId.slice(0, 6)}`;
+};
 
 const resolveUsernames = async (ids: string[]) => {
   const uniqueIds = [...new Set(ids.filter(Boolean))];
@@ -42,6 +48,7 @@ transcriptsRouter.get("/", requireSession, requireStaff, async (req, res) => {
     .filter((ticket) => ticket.transcript)
     .map((ticket) => ({
       ticketId: ticket.id,
+      ticketLabel: formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
       openedById: ticket.ownerId,
       closedById: ticket.events[0]?.actorId || null,
       reason: ticket.closeReason || null,
@@ -88,6 +95,7 @@ transcriptsRouter.get("/:ticketId", requireSession, requireStaff, async (req, re
   res.json({
     transcript: {
       ticketId: ticket.id,
+      ticketLabel: formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
       openedById: ticket.ownerId,
       openedByName: usernameMap.get(ticket.ownerId) || ticket.ownerId,
       closedById: ticket.events[0]?.actorId || null,
