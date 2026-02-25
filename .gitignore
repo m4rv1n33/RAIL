@@ -1,7 +1,33 @@
 node_modules/
+
+# Build output
 dist/
+build/
+
+# Coverage
+coverage/
+
+# Environment files
 .env
 .env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+data/guild-settings.json
+
+# Cache/temp
+.turbo/
+.cache/
+.vite/
+*.tsbuildinfo
+
+# OS/editor
 .DS_Store
-coverage/
 .vscode/
