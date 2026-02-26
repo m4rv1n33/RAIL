@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 
 type User = { id: string; isSuperuser?: boolean };
@@ -59,6 +59,7 @@ type TranscriptDetail = {
 };
 
 export const App = () => {
+  const brandingFooter = "Powered by RAIL • built by @m4rv1n_33";
   const [user, setUser] = useState<User | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -88,6 +89,27 @@ export const App = () => {
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
+  const shownErrorMessagesRef = useRef<Set<string>>(new Set());
+
+  const getErrorMessage = (error: unknown, fallback: string) =>
+    error instanceof Error ? error.message : fallback;
+
+  const notifyErrorOnce = (message: string) => {
+    if (shownErrorMessagesRef.current.has(message)) {
+      return;
+    }
+    shownErrorMessagesRef.current.add(message);
+    alert(message);
+  };
+
+  const isTransientLoadError = (message: string) => {
+    const value = message.toLowerCase();
+    return (
+      value.includes("discord member lookup failed") ||
+      value.includes("discord membership lookup is unavailable") ||
+      value.includes("failed to fetch")
+    );
+  };
 
   const categoryChannels = useMemo(() => channels.filter((channel) => channel.type === 4), [channels]);
   const textChannels = useMemo(() => channels.filter((channel) => channel.type === 0 || channel.type === 5), [channels]);
@@ -123,9 +145,30 @@ export const App = () => {
   };
 
   useEffect(() => {
-    load().catch((error) => {
-      alert(error instanceof Error ? error.message : "Failed to load dashboard");
-    });
+    let cancelled = false;
+    const run = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await load();
+          return;
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+          const message = getErrorMessage(error, "Failed to load dashboard");
+          if (attempt < 2 && isTransientLoadError(message)) {
+            await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+            continue;
+          }
+          notifyErrorOnce(message);
+          return;
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -148,7 +191,7 @@ export const App = () => {
     apiFetch(`/transcripts/${transcriptTicketId}`)
       .then((data) => setActiveTranscript((data.transcript || null) as TranscriptDetail | null))
       .catch((error) => {
-        alert(error instanceof Error ? error.message : "Unable to load transcript");
+        notifyErrorOnce(getErrorMessage(error, "Unable to load transcript"));
       });
   }, [user, transcriptTicketId]);
 
@@ -186,7 +229,7 @@ export const App = () => {
       await load();
       resetTeamForm();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to save team");
+      notifyErrorOnce(getErrorMessage(error, "Unable to save team"));
     } finally {
       setBusy(false);
     }
@@ -204,7 +247,7 @@ export const App = () => {
       }
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to delete team");
+      notifyErrorOnce(getErrorMessage(error, "Unable to delete team"));
     } finally {
       setBusy(false);
     }
@@ -247,7 +290,7 @@ export const App = () => {
       await load();
       resetCategoryForm();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to save category");
+      notifyErrorOnce(getErrorMessage(error, "Unable to save category"));
     } finally {
       setBusy(false);
     }
@@ -265,7 +308,7 @@ export const App = () => {
       }
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to delete category");
+      notifyErrorOnce(getErrorMessage(error, "Unable to delete category"));
     } finally {
       setBusy(false);
     }
@@ -319,7 +362,7 @@ export const App = () => {
       resetPanelForm();
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to save panel");
+      notifyErrorOnce(getErrorMessage(error, "Unable to save panel"));
     } finally {
       setBusy(false);
     }
@@ -337,7 +380,7 @@ export const App = () => {
       }
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to delete panel");
+      notifyErrorOnce(getErrorMessage(error, "Unable to delete panel"));
     } finally {
       setBusy(false);
     }
@@ -356,7 +399,7 @@ export const App = () => {
       setTranscriptChannelId((response.settings?.transcriptChannelId as string) || "");
       alert("Settings saved.");
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to save settings");
+      notifyErrorOnce(getErrorMessage(error, "Unable to save settings"));
     } finally {
       setBusy(false);
     }
@@ -372,6 +415,7 @@ export const App = () => {
             Log in with Discord
           </a>
         </div>
+        <footer className="brand-footer">{brandingFooter}</footer>
       </div>
     );
   }
@@ -402,6 +446,7 @@ export const App = () => {
             <pre className="transcript-pre">{activeTranscript.content}</pre>
           )}
         </section>
+        <footer className="brand-footer">{brandingFooter}</footer>
       </div>
     );
   }
@@ -668,7 +713,19 @@ export const App = () => {
                     </div>
                     <div className="actions">
                       <button className="button secondary" onClick={() => startEditPanel(panel)} disabled={busy}>Edit</button>
-                      <button className="button secondary" onClick={() => apiFetch(`/panels/${panel.id}/publish`, { method: "POST" }).then(() => load())} disabled={busy}>Publish</button>
+                      <button
+                        className="button secondary"
+                        onClick={() =>
+                          apiFetch(`/panels/${panel.id}/publish`, { method: "POST" })
+                            .then(() => load())
+                            .catch((error) => {
+                              notifyErrorOnce(getErrorMessage(error, "Unable to publish panel"));
+                            })
+                        }
+                        disabled={busy}
+                      >
+                        Publish
+                      </button>
                       <button className="button danger" onClick={() => deletePanel(panel)} disabled={busy}>Delete</button>
                     </div>
                   </div>
@@ -697,7 +754,7 @@ export const App = () => {
                     alert(`Force close complete. Closed: ${response.closedCount || 0}, Failed: ${response.failedCount || 0}`);
                     await load();
                   } catch (error) {
-                    alert(error instanceof Error ? error.message : "Unable to force close tickets");
+                    notifyErrorOnce(getErrorMessage(error, "Unable to force close tickets"));
                   } finally {
                     setBusy(false);
                   }
@@ -717,7 +774,7 @@ export const App = () => {
                     await apiFetch("/transcripts", { method: "DELETE" });
                     await load();
                   } catch (error) {
-                    alert(error instanceof Error ? error.message : "Unable to delete all transcripts");
+                    notifyErrorOnce(getErrorMessage(error, "Unable to delete all transcripts"));
                   } finally {
                     setBusy(false);
                   }
@@ -753,6 +810,7 @@ export const App = () => {
           )}
         </section>
       )}
+      <footer className="brand-footer">{brandingFooter}</footer>
     </div>
   );
 };

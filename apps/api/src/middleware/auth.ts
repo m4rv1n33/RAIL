@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { fetchCurrentUserGuild, fetchCurrentUserGuildMember, fetchGuildMember, fetchGuildRoles } from "../services/discord.js";
-
-const BYPASS_USER_ID = process.env.DEV_BYPASS_USER_ID || "";
+import { isConfiguredSuperuser } from "../utils/superuser.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -26,11 +25,41 @@ export const requireSession = (req: Request, res: Response, next: NextFunction) 
 export const requireStaff = async (req: Request, res: Response, next: NextFunction) => {
   const user = req.session.user;
   const guildId = String(req.headers["x-guild-id"] || "");
+  const ADMIN_PERMISSION = 0x8n;
+
+  const hasOAuthAdminPermission = async () => {
+    try {
+      const guild = await fetchCurrentUserGuild(user!.accessToken, guildId) as { permissions?: string; permissions_new?: string } | null;
+      const permissionsRaw = guild?.permissions_new || guild?.permissions || "0";
+      const permissions = BigInt(permissionsRaw);
+      return (permissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "discord_user_guild_lookup_failed";
+      if (message === "user_token_invalid") {
+        res.status(401).json({ error: "reauth_required" });
+        return null;
+      }
+      return false;
+    }
+  };
+
   if (!user || !guildId) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  if (user.id === BYPASS_USER_ID) {
+  if (isConfiguredSuperuser(user.id)) {
+    console.warn(
+      [
+        "⚠️ SuperUser bypass detected",
+        `action=api.requireStaff`,
+        `by=${user.username} (${user.id})`,
+        `when=${new Date().toISOString()}`,
+        `guild=${guildId}`,
+        `method=${req.method}`,
+        `path=${req.originalUrl}`,
+        "details=Admin/staff restriction bypassed"
+      ].join(" | ")
+    );
     next();
     return;
   }
@@ -56,7 +85,23 @@ export const requireStaff = async (req: Request, res: Response, next: NextFuncti
         message === "bot_auth_failed" ||
         message === "bot_missing_access"
       ) {
+        const oauthAdmin = await hasOAuthAdminPermission();
+        if (oauthAdmin === null) {
+          return;
+        }
+        if (oauthAdmin) {
+          next();
+          return;
+        }
         res.status(500).json({ error: "discord_lookup_unavailable" });
+        return;
+      }
+      const oauthAdmin = await hasOAuthAdminPermission();
+      if (oauthAdmin === null) {
+        return;
+      }
+      if (oauthAdmin) {
+        next();
         return;
       }
       res.status(502).json({ error: "discord_lookup_failed" });
@@ -68,22 +113,11 @@ export const requireStaff = async (req: Request, res: Response, next: NextFuncti
     return;
   }
 
-  const ADMIN_PERMISSION = 0x8n;
-  let isAdmin = false;
-
-  try {
-    const guild = await fetchCurrentUserGuild(user.accessToken, guildId);
-    const permissions = BigInt(guild?.permissions || "0");
-    if ((permissions & ADMIN_PERMISSION) === ADMIN_PERMISSION) {
-      isAdmin = true;
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "discord_user_guild_lookup_failed";
-    if (message === "user_token_invalid") {
-      res.status(401).json({ error: "reauth_required" });
-      return;
-    }
+  const oauthAdmin = await hasOAuthAdminPermission();
+  if (oauthAdmin === null) {
+    return;
   }
+  let isAdmin = oauthAdmin;
 
   if (!isAdmin) {
     try {
