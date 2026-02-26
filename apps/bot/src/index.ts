@@ -28,9 +28,11 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { prisma } from "@rail/db";
 import { TicketStatus } from "@rail/shared";
+import { initDiscordLogRelay } from "./logRelay.js";
 
 config({ path: new URL("../.env", import.meta.url) });
 config();
+initDiscordLogRelay("bot");
 
 const client = new Client({
   intents: [
@@ -185,6 +187,50 @@ const toDiscordTimestamp = (value?: string) => {
   return `<t:${unix}:F>`;
 };
 
+const BRAND_FOOTER = "Powered by RAIL • built by @m4rv1n_33";
+const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
+
+type AutocompleteTeam = { id: string; name: string };
+const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
+
+const isPrismaPoolTimeout = (error: unknown) => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown };
+  return candidate.code === "P2024";
+};
+
+const getTeamsForAutocomplete = async (guildId: string) => {
+  const now = Date.now();
+  const cached = teamAutocompleteCache.get(guildId);
+  if (cached && cached.expiresAt > now) {
+    return cached.teams;
+  }
+
+  try {
+    const teams = await prisma.supportTeam.findMany({
+      where: { guildId },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+      take: 100
+    });
+    teamAutocompleteCache.set(guildId, {
+      expiresAt: now + TEAM_AUTOCOMPLETE_CACHE_TTL_MS,
+      teams
+    });
+    return teams;
+  } catch (error) {
+    if (isPrismaPoolTimeout(error) && cached?.teams?.length) {
+      console.warn(
+        `[autocomplete] Using stale support-team cache for guild ${guildId} due to Prisma pool timeout (P2024).`
+      );
+      return cached.teams;
+    }
+    throw error;
+  }
+};
+
 const getSettingsFilePath = () => {
   const candidates = [
     path.resolve(process.cwd(), "data", "guild-settings.json"),
@@ -271,7 +317,8 @@ const buildPanelEmbed = async (panelId: string) => {
   }
   const embed = new EmbedBuilder()
     .setTitle(panel.title)
-    .setDescription(panel.description);
+    .setDescription(panel.description)
+    .setFooter({ text: BRAND_FOOTER });
   panel.categories
     .filter((link) => link.enabled && link.category.enabled)
     .forEach((link) => {
@@ -428,6 +475,20 @@ const buildCloseModal = (ticketId: string) => {
   return modal;
 };
 
+const buildCloseRequestButtons = (ticketId: string, disabled = false) => {
+  const accept = new ButtonBuilder()
+    .setCustomId(`closerequest:accept:${ticketId}`)
+    .setLabel("Accept Close")
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(disabled);
+  const deny = new ButtonBuilder()
+    .setCustomId(`closerequest:deny:${ticketId}`)
+    .setLabel("Keep Open")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(disabled);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(accept, deny);
+};
+
 const applyClaimedPermissions = async (ticketId: string, claimedById: string) => {
   const ticket = await prisma.ticket.findFirst({
     where: { id: ticketId },
@@ -504,7 +565,10 @@ const createTicket = async (
   );
   const embed = new EmbedBuilder()
     .setTitle(ticketLabel)
-    .setDescription("A staff member will be with you shortly.");
+    .setDescription(
+      "Please send your issue details so the team can help quickly.\n\nThis ticket auto-closes after 48 hours of inactivity and will be closed if there is no reply within the first 30 minutes."
+    )
+    .setFooter({ text: BRAND_FOOTER });
   const roleMentions = team.roles.map((role) => `<@&${role.roleId}>`).join(" ");
   await channel.send({
     content: `${roleMentions} New ${category.name} ticket opened by <@${userId}>.`,
@@ -586,9 +650,48 @@ const userHasSupportRole = async (guildId: string, roleIds: string[]) => {
 
 const BYPASS_USER_ID = process.env.DEV_BYPASS_USER_ID || "";
 
+const BYPASS_USER_IDS = new Set(
+  BYPASS_USER_ID
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
+
+const hasSuperuserBypass = (userId: string) => {
+  if (!userId) {
+    return false;
+  }
+  if (BYPASS_USER_IDS.has(userId)) {
+    return true;
+  }
+  return isConfiguredSuperuser(userId, getConfiguredSuperusers());
+};
+
+const auditSuperuserBypass = (params: {
+  action: string;
+  userId: string;
+  username?: string;
+  guildId?: string | null;
+  channelId?: string | null;
+  details?: string;
+}) => {
+  const parts = [
+    "⚠️ SuperUser bypass detected",
+    `action=${params.action}`,
+    `by=${params.username ? `${params.username} (${params.userId})` : params.userId}`,
+    `when=${new Date().toISOString()}`,
+    `guild=${params.guildId || "unknown"}`,
+    `channel=${params.channelId || "unknown"}`
+  ];
+  if (params.details) {
+    parts.push(`details=${params.details}`);
+  }
+  console.warn(parts.join(" | "));
+};
+
 const isAuthorizedForTicket = async (userId: string, guildId: string, roleIds: string[], ticket?: Awaited<ReturnType<typeof getTicketById>>) => {
-  // Bypass for special user
-  if (userId === BYPASS_USER_ID) return true;
+  // Bypass for superusers
+  if (hasSuperuserBypass(userId)) return true;
   
   // Check for admin
   try {
@@ -618,6 +721,9 @@ const canManageTicket = async (
 ) => {
   if (!ticket) {
     return false;
+  }
+  if (hasSuperuserBypass(userId)) {
+    return true;
   }
   const isAuthorized = await isAuthorizedForTicket(userId, guildId, roleIds, ticket);
   if (!isAuthorized) {
@@ -690,18 +796,25 @@ const autocompleteTeams = async (interaction: AutocompleteInteraction) => {
     await interaction.respond([]);
     return;
   }
-  const query = String(focused.value || "").toLowerCase();
-  const teams = await prisma.supportTeam.findMany({
-    where: {
-      guildId: interaction.guildId,
-      name: { contains: query }
-    },
-    orderBy: { name: "asc" },
-    take: 25
-  });
-  await interaction.respond(
-    teams.map((team) => ({ name: team.name, value: team.id }))
-  );
+  try {
+    const query = String(focused.value || "").toLowerCase();
+    const allTeams = await getTeamsForAutocomplete(interaction.guildId);
+    const teams = allTeams
+      .filter((team) => team.name.toLowerCase().includes(query))
+      .slice(0, 25);
+    await interaction.respond(
+      teams.map((team) => ({ name: team.name, value: team.id }))
+    );
+  } catch (error) {
+    if (isPrismaPoolTimeout(error)) {
+      console.warn(
+        `[autocomplete] Prisma connection pool timeout (P2024) while fetching teams for guild ${interaction.guildId}.`
+      );
+    } else {
+      console.error("[autocomplete] Failed to fetch teams:", error);
+    }
+    await interaction.respond([]).catch(() => null);
+  }
 };
 
 const registerCommands = async () => {
@@ -713,12 +826,23 @@ const registerCommands = async () => {
   }
   const commands = [
     new SlashCommandBuilder()
-      .setName("ticket")
-      .setDescription("Ticket actions")
-      .addSubcommand((sub) => sub.setName("open").setDescription("Open a ticket"))
-      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim the current ticket"))
-      .addSubcommand((sub) => sub.setName("unclaim").setDescription("Unclaim the current ticket"))
-      .addSubcommand((sub) => sub.setName("close").setDescription("Close the current ticket")),
+      .setName("open")
+      .setDescription("Open a ticket"),
+    new SlashCommandBuilder()
+      .setName("claim")
+      .setDescription("Claim the current ticket"),
+    new SlashCommandBuilder()
+      .setName("unclaim")
+      .setDescription("Unclaim the current ticket"),
+    new SlashCommandBuilder()
+      .setName("close")
+      .setDescription("Close the current ticket")
+      .addStringOption((option) =>
+        option
+          .setName("reason")
+          .setDescription("Optional reason for closing the ticket")
+          .setRequired(false)
+      ),
     new SlashCommandBuilder()
       .setName("panel")
       .setDescription("Panel actions")
@@ -754,7 +878,16 @@ const registerCommands = async () => {
       ),
     new SlashCommandBuilder()
       .setName("superuser")
-      .setDescription("Display current superuser access information")
+      .setDescription("Display current superuser access information"),
+    new SlashCommandBuilder()
+      .setName("closerequest")
+      .setDescription("Request ticket closure from the ticket creator")
+      .addStringOption((option) =>
+        option
+          .setName("reason")
+          .setDescription("Reason for requesting closure")
+          .setRequired(true)
+      )
   
   ].map((command) => command.toJSON());
   const rest = new REST({ version: "10" }).setToken(token);
@@ -980,10 +1113,20 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
-    await sourceInteraction.reply({ content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.` });
+    await sourceInteraction.reply({
+      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+      flags: MessageFlags.Ephemeral
+    });
   };
 
   if (interaction.isChatInputCommand()) {
+    const optionsSummary = interaction.options.data
+      .map((option) => `${option.name}=${option.value ?? ""}`)
+      .join(", ");
+    console.info(
+      `[command] /${interaction.commandName} by ${interaction.user.tag} (${interaction.user.id}) guild=${interaction.guildId || "none"} channel=${interaction.channelId || "none"}${optionsSummary ? ` options=${optionsSummary}` : ""}`
+    );
+
     if (!interaction.guildId) {
       await interaction.reply({ content: "Guild not found.", flags: MessageFlags.Ephemeral });
       return;
@@ -1057,37 +1200,50 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === "ticket") {
-      const sub = interaction.options.getSubcommand();
-      if (sub === "open") {
-        const categories = await getEnabledCategories(interaction.guildId);
-        if (categories.length === 0) {
-          await interaction.reply({ content: "No categories available.", flags: MessageFlags.Ephemeral });
-          return;
-        }
-        if (categories.length === 1) {
-          await handleOpenCategory(categories[0].id, interaction);
-          return;
-        }
-        const row = buildCategorySelect(`ticket-open:${interaction.user.id}`, categories);
-        await interaction.reply({ content: "Select a category to open.", components: [row], flags: MessageFlags.Ephemeral });
+    if (interaction.commandName === "open") {
+      const categories = await getEnabledCategories(interaction.guildId);
+      if (categories.length === 0) {
+        await interaction.reply({ content: "No categories available.", flags: MessageFlags.Ephemeral });
         return;
       }
+      if (categories.length === 1) {
+        await handleOpenCategory(categories[0].id, interaction);
+        return;
+      }
+      const row = buildCategorySelect(`ticket-open:${interaction.user.id}`, categories);
+      await interaction.reply({ content: "Select a category to open.", components: [row], flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (["claim", "unclaim", "close"].includes(interaction.commandName)) {
       const ticket = await getTicketByChannel(interaction.channelId);
       if (!ticket) {
         await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
         return;
       }
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
       const isAuthorized = await isAuthorizedForTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-      if (!isAuthorized) {
-        await interaction.reply({ content: "Not authorized for this ticket.", flags: MessageFlags.Ephemeral });
+      const isOwner = ticket.ownerId === interaction.user.id;
+      if (!isAuthorized && !(interaction.commandName === "close" && isOwner)) {
+        await interaction.reply({ content: `<@${interaction.user.id}> you are not authorized for this ticket.`, flags: MessageFlags.Ephemeral });
         return;
       }
-      if (sub === "claim") {
-        if (ticket.claimedById && ticket.claimedById !== interaction.user.id) {
-          await interaction.reply({ content: `This ticket is already claimed by <@${ticket.claimedById}>.` });
+
+      if (interaction.commandName === "claim") {
+        if (ticket.claimedById && ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+          auditSuperuserBypass({
+            action: "ticket.claim",
+            userId: interaction.user.id,
+            username: interaction.user.tag,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            details: `Claim ownership restriction bypassed; currentClaimer=${ticket.claimedById}`
+          });
+        }
+        if (ticket.claimedById && ticket.claimedById !== interaction.user.id && !requesterIsSuperuser) {
+          await interaction.reply({ content: `<@${interaction.user.id}> this ticket is already claimed by <@${ticket.claimedById}>.` });
           return;
         }
         await prisma.ticket.update({
@@ -1101,13 +1257,24 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `Ticket claimed by <@${interaction.user.id}>.` });
         return;
       }
-      if (sub === "unclaim") {
+
+      if (interaction.commandName === "unclaim") {
         if (!ticket.claimedById) {
-          await interaction.reply({ content: "This ticket is not currently claimed." });
+          await interaction.reply({ content: `<@${interaction.user.id}> this ticket is not currently claimed.` });
           return;
         }
-        if (ticket.claimedById !== interaction.user.id) {
-          await interaction.reply({ content: "Only the current claimer can unclaim this ticket." });
+        if (ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+          auditSuperuserBypass({
+            action: "ticket.unclaim",
+            userId: interaction.user.id,
+            username: interaction.user.tag,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            details: `Claimer-only restriction bypassed; currentClaimer=${ticket.claimedById || "none"}`
+          });
+        }
+        if (ticket.claimedById !== interaction.user.id && !requesterIsSuperuser) {
+          await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can unclaim this ticket.` });
           return;
         }
         await prisma.ticket.update({
@@ -1129,22 +1296,37 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `Ticket unclaimed by <@${interaction.user.id}>.` });
         return;
       }
-      if (sub === "close") {
+
+      if (interaction.commandName === "close") {
         const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-        if (!canManage) {
-          await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+        const canClose = canManage || ticket.ownerId === interaction.user.id;
+        if (!canClose) {
+          await interaction.reply({ content: `<@${interaction.user.id}> only the ticket owner or current claimer can close this ticket.` });
           return;
         }
-        await interaction.showModal(buildCloseModal(ticket.id));
+        const reason = interaction.options.getString("reason")?.trim() || undefined;
+        await interaction.reply({ content: "Ticket closure confirmed." });
+        await closeTicket(ticket.id, interaction.user.id, reason);
         return;
       }
     }
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
       const isStaff = await userHasSupportRole(interaction.guildId, roleIds);
-      if (!isStaff) {
-        await interaction.reply({ content: "Not authorized for panels.", flags: MessageFlags.Ephemeral });
+      if (!isStaff && requesterIsSuperuser) {
+        auditSuperuserBypass({
+          action: "panel.publish",
+          userId: interaction.user.id,
+          username: interaction.user.tag,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          details: "Support-team restriction bypassed"
+        });
+      }
+      if (!isStaff && !requesterIsSuperuser) {
+        await interaction.reply({ content: `<@${interaction.user.id}> you are not authorized for panels.`, flags: MessageFlags.Ephemeral });
         return;
       }
       const channel = interaction.options.getChannel("channel") || interaction.channel;
@@ -1170,12 +1352,33 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
         return;
       }
-      if (!ticket.claimedById) {
-        await interaction.reply({ content: "This ticket must be claimed before switching category." });
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      if (!ticket.claimedById && requesterIsSuperuser) {
+        auditSuperuserBypass({
+          action: "ticket.switchcategory",
+          userId: interaction.user.id,
+          username: interaction.user.tag,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          details: "Claim-required restriction bypassed"
+        });
+      }
+      if (!ticket.claimedById && !requesterIsSuperuser) {
+        await interaction.reply({ content: `<@${interaction.user.id}> this ticket must be claimed before switching category.` });
         return;
       }
-      if (ticket.claimedById !== interaction.user.id) {
-        await interaction.reply({ content: "Only the current claimer can switch category." });
+      if (ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+        auditSuperuserBypass({
+          action: "ticket.switchcategory",
+          userId: interaction.user.id,
+          username: interaction.user.tag,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          details: `Claimer-only restriction bypassed; currentClaimer=${ticket.claimedById || "none"}`
+        });
+      }
+      if (ticket.claimedById !== interaction.user.id && !requesterIsSuperuser) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can switch category.` });
         return;
       }
       const teamId = interaction.options.getString("team", true);
@@ -1189,6 +1392,51 @@ client.on("interactionCreate", async (interaction) => {
         }
         await interaction.reply({ content: "Unable to switch this ticket right now." });
       }
+      return;
+    }
+
+    if (interaction.commandName === "closerequest") {
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      const isSupport = await userHasSupportRole(ticket.guildId, roleIds);
+      if (!isSupport && requesterIsSuperuser) {
+        auditSuperuserBypass({
+          action: "ticket.closerequest",
+          userId: interaction.user.id,
+          username: interaction.user.tag,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          details: "Support-staff restriction bypassed"
+        });
+      }
+      if (!isSupport && !requesterIsSuperuser) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only support staff can request ticket closure.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const reason = interaction.options.getString("reason", true).trim();
+      const embed = new EmbedBuilder()
+        .setTitle("Ticket Closure Requested")
+        .setDescription(`This ticket has been marked for closure review by <@${interaction.user.id}>.`)
+        .addFields(
+          { name: "Ticket", value: getTicketDisplayLabel(ticket), inline: true },
+          { name: "Requested By", value: `<@${interaction.user.id}>`, inline: true },
+          { name: "Reason", value: reason }
+        )
+        .setFooter({ text: "Only the ticket creator can accept or deny this request." })
+        .setTimestamp(new Date());
+
+      await interaction.reply({
+        content: `<@${ticket.ownerId}>, support requested to close this ticket.`,
+        embeds: [embed],
+        components: [buildCloseRequestButtons(ticket.id)]
+      });
       return;
     }
   }
@@ -1221,7 +1469,10 @@ client.on("interactionCreate", async (interaction) => {
       modalData[field.id] = interaction.fields.getTextInputValue(field.id);
     }
     const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
-    await interaction.reply({ content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.` });
+    await interaction.reply({
+      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
@@ -1239,12 +1490,13 @@ client.on("interactionCreate", async (interaction) => {
     const member = await interaction.guild?.members.fetch(interaction.user.id);
     const roleIds = member?.roles.cache.map((role) => role.id) || [];
     const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-    if (!canManage) {
-      await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+    const canClose = canManage || ticket.ownerId === interaction.user.id;
+    if (!canClose) {
+      await interaction.reply({ content: `<@${interaction.user.id}> only the ticket owner or current claimer can close this ticket.` });
       return;
     }
     const reason = interaction.fields.getTextInputValue("reason")?.trim() || undefined;
-    await interaction.reply({ content: "Ticket closure confirmed.", flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: "Ticket closure confirmed." });
     await closeTicket(ticketId, interaction.user.id, reason);
     return;
   }
@@ -1252,7 +1504,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ticket-open:")) {
     const userId = interaction.customId.split(":")[1];
     if (userId !== interaction.user.id) {
-      await interaction.reply({ content: "Not authorized.", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `<@${interaction.user.id}> you are not authorized to use this selection.`, flags: MessageFlags.Ephemeral });
       return;
     }
     await handleOpenCategory(interaction.values[0], interaction);
@@ -1318,13 +1570,25 @@ client.on("interactionCreate", async (interaction) => {
     }
     const member = await interaction.guild?.members.fetch(interaction.user.id);
     const roleIds = member?.roles.cache.map((role) => role.id) || [];
+    const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
     const isAuthorized = await isAuthorizedForTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-    if (!isAuthorized) {
-      await interaction.reply({ content: "Not authorized for this ticket.", flags: MessageFlags.Ephemeral });
+    const isOwner = ticket.ownerId === interaction.user.id;
+    if (!isAuthorized && !(action === "close" && isOwner)) {
+      await interaction.reply({ content: `<@${interaction.user.id}> you are not authorized for this ticket.`, flags: MessageFlags.Ephemeral });
       return;
     }
     if (action === "claim") {
-      if (ticket.claimedById && ticket.claimedById !== interaction.user.id) {
+      if (ticket.claimedById && ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+        auditSuperuserBypass({
+          action: "ticket.button.claim",
+          userId: interaction.user.id,
+          username: interaction.user.tag,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          details: `Claim ownership restriction bypassed; currentClaimer=${ticket.claimedById}`
+        });
+      }
+      if (ticket.claimedById && ticket.claimedById !== interaction.user.id && !requesterIsSuperuser) {
         await interaction.reply({ content: `This ticket is already claimed by <@${ticket.claimedById}>.` });
         return;
       }
@@ -1341,13 +1605,90 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (action === "close") {
       const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-      if (!canManage) {
-        await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+      const canClose = canManage || ticket.ownerId === interaction.user.id;
+      if (!canClose) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the ticket owner or current claimer can close this ticket.` });
         return;
       }
       await interaction.showModal(buildCloseModal(ticketId));
       return;
     }
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith("closerequest:")) {
+    const [_, decision, ticketId] = interaction.customId.split(":");
+    const ticket = await getTicketById(ticketId);
+    if (!ticket) {
+      await interaction.reply({ content: "Ticket not found.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+    if (interaction.user.id !== ticket.ownerId && requesterIsSuperuser) {
+      auditSuperuserBypass({
+        action: `ticket.closerequest.${decision}`,
+        userId: interaction.user.id,
+        username: interaction.user.tag,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        details: `Ticket-owner-only restriction bypassed; ticketOwner=${ticket.ownerId}`
+      });
+    }
+    if (interaction.user.id !== ticket.ownerId && !requesterIsSuperuser) {
+      await interaction.reply({ content: `<@${interaction.user.id}> only the ticket creator can respond to this close request.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const previous = EmbedBuilder.from(interaction.message.embeds[0] || new EmbedBuilder().setTitle("Ticket Closure Requested"));
+    const currentFields = previous.data.fields || [];
+    const reasonField = currentFields.find((field) => field.name === "Reason");
+    const baseReason = reasonField?.value || "No reason provided";
+
+    if (decision === "deny") {
+      const deniedBy = `<@${interaction.user.id}> denied the close request.`;
+      previous
+        .setColor(0xe74c3c)
+        .setDescription(deniedBy)
+        .setFooter({ text: "Close request denied. Ticket remains open." })
+        .setTimestamp(new Date());
+      await interaction.update({
+        embeds: [previous],
+        components: [buildCloseRequestButtons(ticketId, true)]
+      });
+      await interaction.followUp({ content: `<@${interaction.user.id}> denied the closerequest!` });
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId,
+          type: "CLOSE_REQUEST_DENY",
+          actorId: interaction.user.id,
+          data: { reason: baseReason }
+        }
+      });
+      return;
+    }
+
+    if (decision === "accept") {
+      previous
+        .setDescription(`<@${interaction.user.id}> accepted the close request.`)
+        .setFooter({ text: "Close request accepted." })
+        .setTimestamp(new Date());
+      await interaction.update({
+        embeds: [previous],
+        components: [buildCloseRequestButtons(ticketId, true)]
+      });
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId,
+          type: "CLOSE_REQUEST_ACCEPT",
+          actorId: interaction.user.id,
+          data: { reason: baseReason }
+        }
+      });
+      await closeTicket(ticketId, interaction.user.id, `Close request accepted: ${baseReason}`);
+      return;
+    }
+
+    await interaction.reply({ content: "Invalid close request action.", flags: MessageFlags.Ephemeral });
+    return;
   }
 
   if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
@@ -1360,7 +1701,7 @@ client.on("interactionCreate", async (interaction) => {
     const roleIds = member?.roles.cache.map((role) => role.id) || [];
     const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
     if (!canManage) {
-      await interaction.reply({ content: "Only the current claimer can manage this ticket." });
+      await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
       return;
     }
     const channel = await client.channels.fetch(ticket.channelId).catch(() => null);

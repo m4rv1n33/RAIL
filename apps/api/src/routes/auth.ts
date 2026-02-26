@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { exchangeCode, fetchDiscordUser } from "../services/discord.js";
+import { isConfiguredSuperuser } from "../utils/superuser.js";
 
 export const authRouter = Router();
 
@@ -33,12 +34,11 @@ authRouter.get("/callback", async (req, res) => {
 
 authRouter.get("/me", (req, res) => {
   const user = req.session.user || null;
-  const bypassUserId = process.env.DEV_BYPASS_USER_ID || "";
   res.json({
     user: user
       ? {
           ...user,
-          isSuperuser: user.id === bypassUserId
+          isSuperuser: isConfiguredSuperuser(user.id)
         }
       : null
   });

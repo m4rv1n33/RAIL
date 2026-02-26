@@ -32,7 +32,7 @@ model TicketCategory {
   id              String             @id @default(cuid())
   guildId         String
   name            String
-  description     String
+  description     String             @db.Text
   supportTeamId   String
   enabled         Boolean            @default(true)
   sortOrder       Int                @default(0)

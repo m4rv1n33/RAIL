@@ -3,9 +3,9 @@ import { prisma } from "@rail/db";
 import { requireSession, requireStaff } from "../middleware/auth.js";
 import { fetchDiscordUserById } from "../services/discord.js";
 import { forceCloseOpenTickets } from "../services/tickets.js";
+import { isConfiguredSuperuser } from "../utils/superuser.js";
 
 export const transcriptsRouter = Router();
-const SUPERUSER_ID = process.env.DEV_BYPASS_USER_ID || "";
 const formatTicketLabel = (ticketNumber: number | null | undefined, ticketId: string) => {
   if (typeof ticketNumber === "number") {
     return `ticket-${String(ticketNumber).padStart(4, "0")}`;
@@ -114,7 +114,7 @@ transcriptsRouter.get("/:ticketId", requireSession, requireStaff, async (req, re
 transcriptsRouter.delete("/", requireSession, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const userId = String(req.session.user?.id || "");
-  if (userId !== SUPERUSER_ID) {
+  if (!isConfiguredSuperuser(userId)) {
     res.status(403).json({ error: "superuser_only" });
     return;
   }
@@ -131,7 +131,7 @@ transcriptsRouter.delete("/", requireSession, async (req, res) => {
 transcriptsRouter.post("/force-close-open", requireSession, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const userId = String(req.session.user?.id || "");
-  if (userId !== SUPERUSER_ID) {
+  if (!isConfiguredSuperuser(userId)) {
     res.status(403).json({ error: "superuser_only" });
     return;
   }

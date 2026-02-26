@@ -104,7 +104,7 @@ export const fetchCurrentUserGuild = async (accessToken: string, guildId: string
   if (!response.ok) {
     throw new Error("discord_user_guild_lookup_failed");
   }
-  const guilds = (await response.json()) as Array<{ id: string; permissions?: string }>;
+  const guilds = (await response.json()) as Array<{ id: string; permissions?: string; permissions_new?: string }>;
   return guilds.find((guild) => guild.id === guildId) || null;
 };
 
