@@ -31,3 +31,5 @@ data/guild-settings.json
 # OS/editor
 .DS_Store
 .vscode/
+
+testing/ 
