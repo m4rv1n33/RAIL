@@ -1312,21 +1312,20 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
-      const roleIds = member?.roles.cache.map((role) => role.id) || [];
       const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
-      const isStaff = await userHasSupportRole(interaction.guildId, roleIds);
-      if (!isStaff && requesterIsSuperuser) {
+      const isAdministrator = member?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
+      if (!isAdministrator && requesterIsSuperuser) {
         auditSuperuserBypass({
           action: "panel.publish",
           userId: interaction.user.id,
           username: interaction.user.tag,
           guildId: interaction.guildId,
           channelId: interaction.channelId,
-          details: "Support-team restriction bypassed"
+          details: "Administrator permission restriction bypassed"
         });
       }
-      if (!isStaff && !requesterIsSuperuser) {
-        await interaction.reply({ content: `<@${interaction.user.id}> you are not authorized for panels.`, flags: MessageFlags.Ephemeral });
+      if (!isAdministrator && !requesterIsSuperuser) {
+        await interaction.reply({ content: `<@${interaction.user.id}> you must have Administrator permission to publish panels.`, flags: MessageFlags.Ephemeral });
         return;
       }
       const channel = interaction.options.getChannel("channel") || interaction.channel;
