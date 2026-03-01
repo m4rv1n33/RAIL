@@ -195,6 +195,8 @@ const PANEL_TOP_BANNER_NAME = "top.png";
 const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
 const ATTACHMENT_STORAGE_CACHE_TTL_MS = Number(process.env.ATTACHMENT_STORAGE_CACHE_TTL_MS || 30_000);
+const DEFAULT_MEDIA_FORUM_OPEN_TAG_ID = "1477789993127645395";
+const DEFAULT_MEDIA_FORUM_CLOSED_TAG_ID = "1477790028922097837";
 
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
@@ -359,6 +361,36 @@ const saveTicketMediaPostLink = async (ticketId: string, actorId: string, link: 
   });
 };
 
+const getMediaForumTagIdsForGuild = async (guildId: string) => {
+  const settingsFilePath = getSettingsFilePath();
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<
+      string,
+      {
+        mediaForumOpenTagId?: string;
+        mediaForumClosedTagId?: string;
+      }
+    >;
+    const guildSettings = parsed[guildId] || {};
+    return {
+      openTagId:
+        guildSettings.mediaForumOpenTagId ||
+        process.env.MEDIA_FORUM_OPEN_TAG_ID ||
+        DEFAULT_MEDIA_FORUM_OPEN_TAG_ID,
+      closedTagId:
+        guildSettings.mediaForumClosedTagId ||
+        process.env.MEDIA_FORUM_CLOSED_TAG_ID ||
+        DEFAULT_MEDIA_FORUM_CLOSED_TAG_ID
+    };
+  } catch {
+    return {
+      openTagId: process.env.MEDIA_FORUM_OPEN_TAG_ID || DEFAULT_MEDIA_FORUM_OPEN_TAG_ID,
+      closedTagId: process.env.MEDIA_FORUM_CLOSED_TAG_ID || DEFAULT_MEDIA_FORUM_CLOSED_TAG_ID
+    };
+  }
+};
+
 const getTicketTitleForMediaPost = async (ticket: { id: string; channelId: string; ticketNumber?: number | null }) => {
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
   if (channel && channel.type === ChannelType.GuildText) {
@@ -419,6 +451,7 @@ const createMediaPostWithFirstMessage = async (
 
   const threadName = await getTicketTitleForMediaPost(ticket);
   const ticketLabel = getTicketDisplayLabel(ticket);
+  const { openTagId } = await getMediaForumTagIdsForGuild(ticket.guildId);
   const attachmentChunks = getAttachmentChunks(message);
   if (attachmentChunks.length === 0) {
     return;
@@ -426,6 +459,7 @@ const createMediaPostWithFirstMessage = async (
 
   const created = await forumChannel.threads.create({
     name: threadName,
+    appliedTags: openTagId ? [openTagId] : [],
     message: {
       content: `Ticket UUID: ${ticket.id}`,
       embeds: [buildMediaEmbed(ticketLabel, message)],
@@ -547,10 +581,12 @@ const finalizeTicketMediaPost = async (ticket: {
     if (forumChannelId) {
       const forumChannel = await client.channels.fetch(forumChannelId).catch(() => null);
       if (forumChannel && forumChannel.type === ChannelType.GuildForum) {
+        const { openTagId } = await getMediaForumTagIdsForGuild(ticket.guildId);
         const threadName = await getTicketTitleForMediaPost(ticket);
         thread = await forumChannel.threads
           .create({
             name: threadName,
+            appliedTags: openTagId ? [openTagId] : [],
             message: { content: "No media available for this ticket." }
           })
           .catch(() => null);
@@ -581,6 +617,11 @@ const finalizeTicketMediaPost = async (ticket: {
       ]
     })
     .catch(() => null);
+
+  const { closedTagId } = await getMediaForumTagIdsForGuild(ticket.guildId);
+  if (closedTagId && "setAppliedTags" in thread && typeof thread.setAppliedTags === "function") {
+    await thread.setAppliedTags([closedTagId]).catch(() => null);
+  }
 
   await enforceReadOnlyMediaPost(thread);
   await thread.setLocked(true).catch(() => null);
