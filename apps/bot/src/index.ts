@@ -310,6 +310,8 @@ const getMediaForumChannelIdForGuild = async (guildId: string) => {
       "";
   } catch {
     channelId =
+      process.env.MEDIA_FORUM_CHANNEL_ID ||
+      process.env.ATTACHMENT_FORUM_CHANNEL_ID ||
       process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
       process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
       process.env.TRANSCRIPT_CHANNEL_ID ||
@@ -425,6 +427,7 @@ const createMediaPostWithFirstMessage = async (
   const created = await forumChannel.threads.create({
     name: threadName,
     message: {
+      content: `Ticket UUID: ${ticket.id}`,
       embeds: [buildMediaEmbed(ticketLabel, message)],
       files: attachmentChunks[0]
     }

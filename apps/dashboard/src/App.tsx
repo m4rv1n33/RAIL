@@ -817,13 +817,18 @@ export const App = () => {
                       <button className="button secondary" onClick={() => startEditPanel(panel)} disabled={busy}>Edit</button>
                       <button
                         className="button secondary"
-                        onClick={() =>
-                          apiFetch(`/panels/${panel.id}/publish`, { method: "POST" })
-                            .then(() => load())
-                            .catch((error) => {
-                              notifyErrorOnce(getErrorMessage(error, "Unable to publish panel"));
-                            })
-                        }
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            await apiFetch(`/panels/${panel.id}/publish`, { method: "POST" });
+                            await load();
+                            alert("Panel published.");
+                          } catch (error) {
+                            notifyErrorOnce(getErrorMessage(error, "Unable to publish panel"));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
                         disabled={busy}
                       >
                         Publish
