@@ -1260,6 +1260,53 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const isDiscordImageUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (!host.includes("discordapp.com") && !host.includes("discordapp.net")) {
+      return false;
+    }
+    return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+};
+
+const renderTranscriptContentHtml = (raw: string) => {
+  const value = raw || "";
+  const urlPattern = /https?:\/\/[^\s<>'"]+/g;
+  const parts: string[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = urlPattern.exec(value)) !== null) {
+    const start = match.index;
+    const url = match[0];
+    const textChunk = value.slice(cursor, start);
+    if (textChunk) {
+      parts.push(escapeHtml(textChunk).replaceAll("\n", "<br />"));
+    }
+
+    const safeUrl = escapeHtml(url);
+    if (isDiscordImageUrl(url)) {
+      parts.push(
+        `<div class="attachment"><a class="link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a><img src="${safeUrl}" alt="Attachment" loading="lazy" /></div>`
+      );
+    } else {
+      parts.push(`<a class="link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`);
+    }
+
+    cursor = start + url.length;
+  }
+
+  if (cursor < value.length) {
+    parts.push(escapeHtml(value.slice(cursor)).replaceAll("\n", "<br />"));
+  }
+
+  return parts.join("");
+};
+
 const buildTranscriptHtml = (
   ticketLabel: string,
   lines: Array<{ timestamp: number; author: string; content: string }>
@@ -1270,7 +1317,7 @@ const buildTranscriptHtml = (
       return `
       <article class="msg">
         <div class="meta">${escapeHtml(line.author)} • ${escapeHtml(time)}</div>
-        <div class="content">${escapeHtml(line.content || "(no text content)")}</div>
+        <div class="content">${renderTranscriptContentHtml(line.content || "(no text content)")}</div>
       </article>`;
     })
     .join("\n");
@@ -1283,30 +1330,54 @@ const buildTranscriptHtml = (
     <title>${escapeHtml(APP_NAME)} • Ticket Transcript ${escapeHtml(ticketLabel)}</title>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: dark;
         font-family: "Inter", "Segoe UI", sans-serif;
-        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-        color: #0f172a;
+        background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+        color: #e2e8f0;
       }
       body { margin: 0; padding: 24px; }
       .wrap { max-width: 960px; margin: 0 auto; }
       .card {
-        background: #fff;
-        border: 1px solid #dbe4ef;
+        background: #0f172a;
+        border: 1px solid #334155;
         border-radius: 14px;
         padding: 18px;
       }
       h1 { margin: 0 0 12px; font-size: 24px; }
       .msg {
-        border: 1px solid #e2e8f0;
+        border: 1px solid #334155;
         border-radius: 10px;
         padding: 10px 12px;
-        background: #f8fafc;
+        background: #1e293b;
         margin-bottom: 10px;
       }
-      .meta { font-size: 12px; color: #475569; margin-bottom: 6px; }
+      .meta { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
       .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
-      .brand { margin-top: 14px; font-size: 12px; color: #64748b; }
+      .brand { margin-top: 14px; font-size: 12px; color: #94a3b8; }
+      .link { color: #93c5fd; text-decoration: underline; }
+      .attachment { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+      .attachment img {
+        max-width: min(100%, 560px);
+        max-height: 420px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        object-fit: contain;
+        background: #0b1220;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          color-scheme: light;
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          color: #0f172a;
+        }
+        .card { background: #ffffff; border-color: #dbe4ef; }
+        .msg { background: #f8fafc; border-color: #e2e8f0; }
+        .meta { color: #475569; }
+        .brand { color: #64748b; }
+        .link { color: #1d4ed8; }
+        .attachment img { border-color: #dbe4ef; background: #ffffff; }
+      }
     </style>
   </head>
   <body>
@@ -1326,7 +1397,7 @@ const getDashboardTranscriptUrl = (ticketId: string) => {
     process.env.DASHBOARD_ORIGIN ||
     process.env.DASHBOARD_URL ||
     process.env.PUBLIC_DASHBOARD_URL ||
-    "http://localhost:5173"
+    "https://ukrrp.m4rv1n.dev"
   ).trim();
   if (!base) {
     return "";
