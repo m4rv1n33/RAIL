@@ -145,5 +145,5 @@ export const fetchGuildRoles = async (guildId: string) => {
   if (!response.ok) {
     throw new Error("discord_role_lookup_failed");
   }
-  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean; permissions?: string }>>;
+  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean; permissions?: string; color?: number }>>;
 };

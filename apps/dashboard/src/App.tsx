@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiFetch } from "./api.js";
 
 type User = { id: string; isSuperuser?: boolean };
@@ -7,7 +7,7 @@ type Team = {
   name: string;
   roles: { roleId: string }[];
 };
-type DiscordRole = { id: string; name: string; position: number; managed?: boolean };
+type DiscordRole = { id: string; name: string; position: number; managed?: boolean; colorHex?: string | null };
 type Category = {
   id: string;
   name: string;
@@ -58,9 +58,56 @@ type TranscriptDetail = {
   transcriptCreatedAt: string;
 };
 
+const THEME_STORAGE_KEY = "ukrrp-dashboard-theme";
+type Theme = "dark" | "light";
+
+const getInitialTheme = (): Theme => {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return storedTheme === "light" || storedTheme === "dark" ? storedTheme : "dark";
+};
+
+const renderDiscordEmojiText = (value?: string | null) => {
+  if (!value) {
+    return value;
+  }
+  const emojiPattern = /<(a?):([A-Za-z0-9_~]+):(\d+)>/g;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = emojiPattern.exec(value)) !== null) {
+    const [fullMatch, animated, name, id] = match;
+    const matchStart = match.index;
+    if (matchStart > cursor) {
+      parts.push(value.slice(cursor, matchStart));
+    }
+    const extension = animated === "a" ? "gif" : "png";
+    parts.push(
+      <img
+        key={`${id}-${matchStart}`}
+        className="emoji-inline"
+        src={`https://cdn.discordapp.com/emojis/${id}.${extension}?size=32&quality=lossless`}
+        alt={`:${name}:`}
+        title={`:${name}:`}
+      />
+    );
+    cursor = matchStart + fullMatch.length;
+  }
+
+  if (cursor < value.length) {
+    parts.push(value.slice(cursor));
+  }
+
+  return parts.length > 0 ? parts : value;
+};
+
 export const App = () => {
   const appName = "UKRRP Ticket System";
   const brandingFooter = "Powered by RAIL, built by @m4rv1n_33";
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [user, setUser] = useState<User | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -195,6 +242,28 @@ export const App = () => {
         notifyErrorOnce(getErrorMessage(error, "Unable to load transcript"));
       });
   }, [user, transcriptTicketId]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));
+  };
+
+  const themeToggle = (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={toggleTheme}
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {theme === "dark" ? "☀️" : "🌙"}
+    </button>
+  );
 
   const resetTeamForm = () => {
     setEditingTeamId(null);
@@ -409,6 +478,7 @@ export const App = () => {
   if (!user) {
     return (
       <div className="page">
+        {themeToggle}
         <div className="card login-card">
           <h1>{appName}</h1>
           <p>Sign in with Discord to manage tickets and panels.</p>
@@ -425,6 +495,7 @@ export const App = () => {
     const looksLikeHtml = Boolean(activeTranscript?.content?.trim().startsWith("<"));
     return (
       <div className="page">
+        {themeToggle}
         <header className="hero">
           <div>
             <h1>Transcript {activeTranscript?.ticketLabel || (transcriptTicketId ? `ticket-${transcriptTicketId.slice(0, 6)}` : "")}</h1>
@@ -454,6 +525,7 @@ export const App = () => {
 
   return (
     <div className="page">
+      {themeToggle}
       <header className="hero">
         <div>
           <h1>{appName}</h1>
@@ -508,7 +580,7 @@ export const App = () => {
                         }}
                       >
                         <span className={checked ? "checkbox checked" : "checkbox"}>{checked ? "✓" : ""}</span>
-                        <span>@{role.name}</span>
+                        <span className="role-name" style={role.colorHex ? { color: role.colorHex } : undefined}>{role.name}</span>
                       </button>
                     );
                   })
@@ -561,6 +633,7 @@ export const App = () => {
             <label>
               Description
               <textarea
+                className="description-textarea"
                 value={categoryDescription}
                 onChange={(e) => setCategoryDescription(e.target.value)}
                 placeholder="Add a detailed description"
@@ -608,7 +681,7 @@ export const App = () => {
                   <div key={category.id} className="item">
                     <div>
                       <h3>{category.name}</h3>
-                      <p className="multiline-text">{category.description}</p>
+                      <p className="multiline-text">{renderDiscordEmojiText(category.description)}</p>
                       <div className="meta">{teams.find((t) => t.id === category.supportTeamId)?.name || "Unknown Team"}</div>
                     </div>
                     <div className="actions">
@@ -644,7 +717,7 @@ export const App = () => {
             </label>
             <label>
               Description
-              <textarea value={panelDescription} onChange={(e) => setPanelDescription(e.target.value)} />
+              <textarea className="description-textarea" value={panelDescription} onChange={(e) => setPanelDescription(e.target.value)} />
             </label>
             <label>
               Categories
@@ -703,8 +776,8 @@ export const App = () => {
                 {panels.map((panel) => (
                   <div key={panel.id} className="item">
                     <div>
-                      <h3>{panel.title}</h3>
-                      <p>{panel.description}</p>
+                      <h3>{renderDiscordEmojiText(panel.title)}</h3>
+                      <p className="multiline-text">{renderDiscordEmojiText(panel.description)}</p>
                       <div className="meta">
                         Channel {textChannels.find((channel) => channel.id === panel.channelId)?.name || panel.channelId}
                       </div>

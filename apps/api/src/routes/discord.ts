@@ -4,6 +4,13 @@ import { fetchGuildChannels, fetchGuildRoles } from "../services/discord.js";
 
 export const discordRouter = Router();
 
+const toDiscordColorHex = (color?: number) => {
+  if (typeof color !== "number" || color <= 0) {
+    return null;
+  }
+  return `#${color.toString(16).padStart(6, "0")}`;
+};
+
 discordRouter.get("/channels", requireSession, requireStaff, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   if (!guildId) {
@@ -55,7 +62,8 @@ discordRouter.get("/roles", requireSession, requireStaff, async (req, res) => {
         id: role.id,
         name: role.name,
         position: role.position,
-        managed: Boolean(role.managed)
+        managed: Boolean(role.managed),
+        colorHex: toDiscordColorHex(role.color)
       }));
     res.json({ roles: normalized });
   } catch (error) {
