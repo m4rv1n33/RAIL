@@ -143,6 +143,14 @@ transcriptsRouter.post("/force-close-open", requireSession, async (req, res) => 
       res.status(500).json({ error: "bot_internal_missing" });
       return;
     }
+    if (error instanceof Error && error.message === "bot_internal_unreachable") {
+      res.status(502).json({ error: "bot_internal_unreachable" });
+      return;
+    }
+    if (error instanceof Error && error.message === "bot_internal_unauthorized") {
+      res.status(502).json({ error: "bot_internal_unauthorized" });
+      return;
+    }
     res.status(502).json({ error: "bot_force_close_failed" });
   }
 });

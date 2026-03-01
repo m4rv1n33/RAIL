@@ -195,6 +195,7 @@ const PANEL_TOP_BANNER_NAME = "top.png";
 const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
 const ATTACHMENT_STORAGE_CACHE_TTL_MS = Number(process.env.ATTACHMENT_STORAGE_CACHE_TTL_MS || 30_000);
+const HARDCODED_MEDIA_BACKUP_CHANNEL_ID = "1477791851242193051";
 
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
@@ -276,6 +277,10 @@ const getTranscriptChannelIdForGuild = async (guildId: string) => {
 };
 
 const getMediaForumChannelIdForGuild = async (guildId: string) => {
+  if (HARDCODED_MEDIA_BACKUP_CHANNEL_ID) {
+    return HARDCODED_MEDIA_BACKUP_CHANNEL_ID;
+  }
+
   const cached = attachmentArchiveChannelCache.get(guildId);
   const now = Date.now();
   if (cached && cached.expiresAt > now) {
@@ -368,7 +373,7 @@ const createMediaBackupThread = async (
   }
 
   const backupChannel = await client.channels.fetch(backupChannelId).catch(() => null);
-  if (!backupChannel || backupChannel.type !== ChannelType.GuildText) {
+  if (!backupChannel || (backupChannel.type !== ChannelType.GuildText && backupChannel.type !== ChannelType.GuildAnnouncement)) {
     return null;
   }
 

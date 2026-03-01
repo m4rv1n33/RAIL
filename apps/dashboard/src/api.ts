@@ -43,6 +43,10 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
             details = "Only the superuser account can delete all transcripts.";
           } else if (body?.error === "bot_internal_missing") {
             details = "Bot internal API is not configured. Set BOT_INTERNAL_URL and BOT_INTERNAL_SECRET in API environment.";
+          } else if (body?.error === "bot_internal_unreachable") {
+            details = "Bot internal API is unreachable. Ensure the bot service is running and BOT_INTERNAL_URL points to it.";
+          } else if (body?.error === "bot_internal_unauthorized") {
+            details = "Bot internal API rejected the request. BOT_INTERNAL_SECRET must match in API and bot environments.";
           } else if (body?.error === "bot_force_close_failed") {
             details = "Bot failed to force-close open tickets.";
           } else if (body?.error === "bot_sync_failed") {
