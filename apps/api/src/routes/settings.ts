@@ -21,6 +21,7 @@ settingsRouter.put("/", requireSession, requireStaff, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const input = updateSchema.parse(req.body);
   const userId = String(req.session.user?.id || "");
+  const requestedTranscriptUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, "transcriptChannelId");
   const requestedMediaForumUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, "mediaForumChannelId");
 
   if (requestedMediaForumUpdate && !isConfiguredSuperuser(userId)) {
@@ -28,11 +29,14 @@ settingsRouter.put("/", requireSession, requireStaff, async (req, res) => {
     return;
   }
 
-  const settings = await setGuildSettings(guildId, {
-    transcriptChannelId: input.transcriptChannelId || undefined,
-    mediaForumChannelId: requestedMediaForumUpdate
-      ? input.mediaForumChannelId || undefined
-      : undefined
-  });
+  const update: { transcriptChannelId?: string; mediaForumChannelId?: string } = {};
+  if (requestedTranscriptUpdate) {
+    update.transcriptChannelId = input.transcriptChannelId || undefined;
+  }
+  if (requestedMediaForumUpdate) {
+    update.mediaForumChannelId = input.mediaForumChannelId || undefined;
+  }
+
+  const settings = await setGuildSettings(guildId, update);
   res.json({ settings });
 });

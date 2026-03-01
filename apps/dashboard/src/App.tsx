@@ -164,7 +164,7 @@ export const App = () => {
 
   const categoryChannels = useMemo(() => channels.filter((channel) => channel.type === 4), [channels]);
   const textChannels = useMemo(() => channels.filter((channel) => channel.type === 0 || channel.type === 5), [channels]);
-  const forumChannels = useMemo(() => channels.filter((channel) => channel.type === 15), [channels]);
+  const mediaBackupChannels = useMemo(() => channels.filter((channel) => channel.type === 0), [channels]);
   const transcriptTicketId = useMemo(() => {
     const match = routeHash.match(/^#\/transcripts\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : null;
@@ -900,7 +900,7 @@ export const App = () => {
                 Delete All Transcripts
               </button>
               <span className="muted">
-                Active media forum: {settings.mediaForumChannelId ? `#${forumChannels.find((channel) => channel.id === settings.mediaForumChannelId)?.name || settings.mediaForumChannelId}` : "none"}
+                Active media backup channel: {settings.mediaForumChannelId ? `#${mediaBackupChannels.find((channel) => channel.id === settings.mediaForumChannelId)?.name || settings.mediaForumChannelId}` : "none"}
               </span>
             </div>
           )}
@@ -909,10 +909,10 @@ export const App = () => {
               <div className="modal-window">
                 <h3>Change Media Backup Channel</h3>
                 <label>
-                  Forum Channel
+                  Backup Channel
                   <select value={mediaForumChannelDraft} onChange={(e) => setMediaForumChannelDraft(e.target.value)}>
                     <option value="">None</option>
-                    {forumChannels.map((channel) => (
+                    {mediaBackupChannels.map((channel) => (
                       <option key={channel.id} value={channel.id}>
                         {channel.name}
                       </option>
