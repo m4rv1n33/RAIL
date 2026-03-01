@@ -194,9 +194,16 @@ const PRIMARY_EMBED_COLOR = "#1938b4";
 const PANEL_TOP_BANNER_NAME = "top.png";
 const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
+const ATTACHMENT_STORAGE_CACHE_TTL_MS = Number(process.env.ATTACHMENT_STORAGE_CACHE_TTL_MS || 30_000);
 
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
+const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; channelId: string }>();
+
+type MediaPostLinkData = {
+  threadId: string;
+  forumChannelId: string;
+};
 
 const isPrismaPoolTimeout = (error: unknown) => {
   if (!error || typeof error !== "object") {
@@ -265,6 +272,315 @@ const getTranscriptChannelIdForGuild = async (guildId: string) => {
   } catch {
     return process.env.TRANSCRIPT_CHANNEL_ID || "";
   }
+};
+
+const getMediaForumChannelIdForGuild = async (guildId: string) => {
+  const cached = attachmentArchiveChannelCache.get(guildId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.channelId;
+  }
+
+  const settingsFilePath = getSettingsFilePath();
+  let channelId = "";
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<
+      string,
+      {
+        mediaForumChannelId?: string;
+        attachmentForumChannelId?: string;
+        attachmentArchiveChannelId?: string;
+        mediaArchiveChannelId?: string;
+        transcriptChannelId?: string;
+      }
+    >;
+    const guildSettings = parsed[guildId] || {};
+    channelId =
+      guildSettings.mediaForumChannelId ||
+      guildSettings.attachmentForumChannelId ||
+      process.env.MEDIA_FORUM_CHANNEL_ID ||
+      process.env.ATTACHMENT_FORUM_CHANNEL_ID ||
+      guildSettings.attachmentArchiveChannelId ||
+      guildSettings.mediaArchiveChannelId ||
+      process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
+      process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
+      guildSettings.transcriptChannelId ||
+      process.env.TRANSCRIPT_CHANNEL_ID ||
+      "";
+  } catch {
+    channelId =
+      process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
+      process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
+      process.env.TRANSCRIPT_CHANNEL_ID ||
+      "";
+  }
+
+  attachmentArchiveChannelCache.set(guildId, {
+    expiresAt: now + ATTACHMENT_STORAGE_CACHE_TTL_MS,
+    channelId
+  });
+
+  return channelId;
+};
+
+const parseMediaPostLinkData = (value: unknown): MediaPostLinkData | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as { threadId?: unknown; forumChannelId?: unknown };
+  if (typeof candidate.threadId !== "string" || typeof candidate.forumChannelId !== "string") {
+    return null;
+  }
+  return {
+    threadId: candidate.threadId,
+    forumChannelId: candidate.forumChannelId
+  };
+};
+
+const getTicketMediaPostLink = async (ticketId: string) => {
+  const event = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: "MEDIA_POST_LINK" },
+    orderBy: { createdAt: "desc" }
+  });
+  return parseMediaPostLinkData(event?.data);
+};
+
+const saveTicketMediaPostLink = async (ticketId: string, actorId: string, link: MediaPostLinkData) => {
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId,
+      type: "MEDIA_POST_LINK",
+      actorId,
+      data: link
+    }
+  });
+};
+
+const getTicketTitleForMediaPost = async (ticket: { id: string; channelId: string; ticketNumber?: number | null }) => {
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (channel && channel.type === ChannelType.GuildText) {
+    return channel.name;
+  }
+  return getTicketDisplayLabel(ticket);
+};
+
+const enforceReadOnlyMediaPost = async (thread: import("discord.js").AnyThreadChannel) => {
+  await thread.setLocked(true).catch(() => null);
+};
+
+const buildMediaEmbed = (
+  ticketLabel: string,
+  message: import("discord.js").Message
+) => {
+  const sentAtUnix = Math.floor(message.createdTimestamp / 1000);
+  const description = message.content?.trim() || "(No text content)";
+  return new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setTitle(`Media • ${ticketLabel}`)
+    .setDescription(description.slice(0, 4000))
+    .addFields(
+      { name: "Sent By", value: `<@${message.author.id}>`, inline: true },
+      { name: "Sent At", value: `<t:${sentAtUnix}:F>`, inline: true },
+      { name: "Source", value: `[Jump to message](${message.url})`, inline: false }
+    )
+    .setFooter({ text: BRAND_FOOTER });
+};
+
+const getAttachmentChunks = (message: import("discord.js").Message) => {
+  const attachments = [...message.attachments.values()].map(
+    (attachment, index) =>
+      new AttachmentBuilder(attachment.url, {
+        name: attachment.name || `attachment-${index + 1}`
+      })
+  );
+  const chunks: AttachmentBuilder[][] = [];
+  for (let index = 0; index < attachments.length; index += 10) {
+    chunks.push(attachments.slice(index, index + 10));
+  }
+  return chunks;
+};
+
+const createMediaPostWithFirstMessage = async (
+  ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
+  message: import("discord.js").Message
+) => {
+  const forumChannelId = await getMediaForumChannelIdForGuild(ticket.guildId);
+  if (!forumChannelId) {
+    return;
+  }
+
+  const forumChannel = await client.channels.fetch(forumChannelId).catch(() => null);
+  if (!forumChannel || forumChannel.type !== ChannelType.GuildForum) {
+    return;
+  }
+
+  const threadName = await getTicketTitleForMediaPost(ticket);
+  const ticketLabel = getTicketDisplayLabel(ticket);
+  const attachmentChunks = getAttachmentChunks(message);
+  if (attachmentChunks.length === 0) {
+    return;
+  }
+
+  const created = await forumChannel.threads.create({
+    name: threadName,
+    message: {
+      embeds: [buildMediaEmbed(ticketLabel, message)],
+      files: attachmentChunks[0]
+    }
+  });
+
+  await saveTicketMediaPostLink(ticket.id, message.author.id, {
+    threadId: created.id,
+    forumChannelId: forumChannel.id
+  });
+
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId: ticket.id,
+      type: "MEDIA_FORWARD",
+      actorId: message.author.id,
+      data: {
+        messageId: message.id,
+        attachmentCount: message.attachments.size,
+        threadId: created.id
+      }
+    }
+  });
+
+  for (let index = 1; index < attachmentChunks.length; index += 1) {
+    await created.send({
+      embeds: [buildMediaEmbed(ticketLabel, message)],
+      files: attachmentChunks[index]
+    });
+  }
+
+  await enforceReadOnlyMediaPost(created);
+  return created;
+};
+
+const getLinkedMediaThread = async (ticketId: string) => {
+  const link = await getTicketMediaPostLink(ticketId);
+  if (!link) {
+    return null;
+  }
+  const channel = await client.channels.fetch(link.threadId).catch(() => null);
+  if (!channel || !channel.isThread()) {
+    return null;
+  }
+  return channel;
+};
+
+const forwardMediaToTicketPost = async (
+  ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
+  message: import("discord.js").Message
+) => {
+  if (message.attachments.size === 0) {
+    return;
+  }
+
+  const linkedThread = await getLinkedMediaThread(ticket.id);
+  if (!linkedThread) {
+    await createMediaPostWithFirstMessage(ticket, message);
+    return;
+  }
+
+  await linkedThread.setLocked(false).catch(() => null);
+
+  const ticketLabel = getTicketDisplayLabel(ticket);
+  const chunks = getAttachmentChunks(message);
+  for (const chunk of chunks) {
+    await linkedThread.send({
+      embeds: [buildMediaEmbed(ticketLabel, message)],
+      files: chunk
+    });
+  }
+
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId: ticket.id,
+      type: "MEDIA_FORWARD",
+      actorId: message.author.id,
+      data: {
+        messageId: message.id,
+        attachmentCount: message.attachments.size,
+        threadId: linkedThread.id
+      }
+    }
+  });
+
+  await enforceReadOnlyMediaPost(linkedThread);
+};
+
+const syncTicketMediaPostTitle = async (ticket: { id: string }, title: string) => {
+  const linkedThread = await getLinkedMediaThread(ticket.id);
+  if (!linkedThread) {
+    return;
+  }
+  const normalized = title.trim().slice(0, 100);
+  if (!normalized || linkedThread.name === normalized) {
+    return;
+  }
+  await linkedThread.setName(normalized).catch(() => null);
+};
+
+const finalizeTicketMediaPost = async (ticket: {
+  id: string;
+  guildId: string;
+  channelId: string;
+  ticketNumber?: number | null;
+  closeReason?: string | null;
+}) => {
+  let thread = await getLinkedMediaThread(ticket.id);
+  const hadMirroredMedia = Boolean(
+    await prisma.ticketEvent.findFirst({
+      where: { ticketId: ticket.id, type: "MEDIA_FORWARD" },
+      select: { id: true }
+    })
+  );
+
+  if (!thread) {
+    const forumChannelId = await getMediaForumChannelIdForGuild(ticket.guildId);
+    if (forumChannelId) {
+      const forumChannel = await client.channels.fetch(forumChannelId).catch(() => null);
+      if (forumChannel && forumChannel.type === ChannelType.GuildForum) {
+        const threadName = await getTicketTitleForMediaPost(ticket);
+        thread = await forumChannel.threads
+          .create({
+            name: threadName,
+            message: { content: "No media available for this ticket." }
+          })
+          .catch(() => null);
+        if (thread) {
+          await saveTicketMediaPostLink(ticket.id, "system", {
+            threadId: thread.id,
+            forumChannelId: forumChannel.id
+          });
+        }
+      }
+    }
+  } else if (!hadMirroredMedia) {
+    await thread.send("No media available for this ticket.").catch(() => null);
+  }
+
+  if (!thread) {
+    return;
+  }
+
+  await thread
+    .send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(PRIMARY_EMBED_COLOR)
+          .setTitle("Ticket has been closed")
+          .setDescription(ticket.closeReason || "No reason provided")
+          .setFooter({ text: BRAND_FOOTER })
+      ]
+    })
+    .catch(() => null);
+
+  await enforceReadOnlyMediaPost(thread);
+  await thread.setLocked(true).catch(() => null);
 };
 
 const parseModalSchema = (value: unknown): ModalSchema | null => {
@@ -1030,6 +1346,21 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       data: normalizedReason ? { reason: normalizedReason } : undefined
     }
   });
+
+  await finalizeTicketMediaPost({
+    id: ticket.id,
+    guildId: ticket.guildId,
+    channelId: ticket.channelId,
+    ticketNumber: ticket.ticketNumber,
+    closeReason: normalizedReason || null
+  }).catch((error) => {
+    console.warn("[media-post] Failed to finalize media post", {
+      ticketId,
+      channelId: ticket.channelId,
+      error
+    });
+  });
+
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
   const ticketLabel = getTicketDisplayLabel(ticket);
   if (channel && channel.type === ChannelType.GuildText) {
@@ -1749,6 +2080,14 @@ client.on("interactionCreate", async (interaction) => {
     const nextName = customName || baseName;
     await channel.setName(nextName);
     await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
+    await syncTicketMediaPostTitle(ticket, nextName).catch((error) => {
+      console.warn("[media-post] Failed to sync media post title", {
+        ticketId: ticket.id,
+        channelId: interaction.channelId,
+        nextName,
+        error
+      });
+    });
     await prisma.ticketEvent.create({
       data: {
         ticketId: ticket.id,
@@ -1776,6 +2115,17 @@ client.on("messageCreate", async (message) => {
     where: { id: ticket.id },
     data: { lastActivityAt: new Date() }
   });
+
+  try {
+    await forwardMediaToTicketPost(ticket, message);
+  } catch (error) {
+    console.warn("[media-post] Failed to forward ticket media", {
+      ticketId: ticket.id,
+      channelId: message.channel.id,
+      messageId: message.id,
+      error
+    });
+  }
 });
 
 const startInactivityMonitor = () => {

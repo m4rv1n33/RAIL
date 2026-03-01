@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 
 type GuildSettingsRecord = {
   transcriptChannelId?: string;
+  mediaForumChannelId?: string;
 };
 
 type SettingsStore = Record<string, GuildSettingsRecord>;

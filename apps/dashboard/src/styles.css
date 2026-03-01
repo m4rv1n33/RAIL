@@ -235,6 +235,11 @@ textarea {
   flex-wrap: wrap;
 }
 
+.superuser-setting-field {
+  min-width: 240px;
+  flex: 1 1 260px;
+}
+
 .list {
   display: flex;
   flex-direction: column;

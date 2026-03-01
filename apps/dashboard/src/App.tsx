@@ -32,7 +32,7 @@ type Panel = {
   categories: PanelCategoryLink[];
 };
 type DiscordChannel = { id: string; name: string; type: number; parentId?: string | null };
-type GuildSettings = { transcriptChannelId?: string };
+type GuildSettings = { transcriptChannelId?: string; mediaForumChannelId?: string };
 type TranscriptSummary = {
   ticketId: string;
   ticketLabel?: string;
@@ -134,6 +134,7 @@ export const App = () => {
   const [panelDescription, setPanelDescription] = useState("Select a category below and our team will respond.");
   const [panelChannelId, setPanelChannelId] = useState("");
   const [transcriptChannelId, setTranscriptChannelId] = useState("");
+  const [mediaForumChannelId, setMediaForumChannelId] = useState("");
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
@@ -161,6 +162,7 @@ export const App = () => {
 
   const categoryChannels = useMemo(() => channels.filter((channel) => channel.type === 4), [channels]);
   const textChannels = useMemo(() => channels.filter((channel) => channel.type === 0 || channel.type === 5), [channels]);
+  const forumChannels = useMemo(() => channels.filter((channel) => channel.type === 15), [channels]);
   const transcriptTicketId = useMemo(() => {
     const match = routeHash.match(/^#\/transcripts\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : null;
@@ -189,6 +191,7 @@ export const App = () => {
     const loadedSettings = settingsData.settings || {};
     setSettings(loadedSettings);
     setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
+    setMediaForumChannelId(loadedSettings.mediaForumChannelId || "");
     setTranscripts(transcriptData.transcripts || []);
   };
 
@@ -470,6 +473,25 @@ export const App = () => {
       alert("Settings saved.");
     } catch (error) {
       notifyErrorOnce(getErrorMessage(error, "Unable to save settings"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveMediaForumSettings = async () => {
+    setBusy(true);
+    try {
+      const response = await apiFetch("/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          mediaForumChannelId: mediaForumChannelId || null
+        })
+      });
+      setSettings(response.settings || {});
+      setMediaForumChannelId((response.settings?.mediaForumChannelId as string) || "");
+      alert("Media forum channel saved.");
+    } catch (error) {
+      notifyErrorOnce(getErrorMessage(error, "Unable to save media forum channel"));
     } finally {
       setBusy(false);
     }
@@ -815,6 +837,24 @@ export const App = () => {
           <h2>Transcripts</h2>
           {user?.isSuperuser && (
             <div className="actions">
+              <label className="superuser-setting-field">
+                Media Forum Channel
+                <select value={mediaForumChannelId} onChange={(e) => setMediaForumChannelId(e.target.value)}>
+                  <option value="">None</option>
+                  {forumChannels.map((channel) => (
+                    <option key={channel.id} value={channel.id}>
+                      {channel.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={saveMediaForumSettings}
+              >
+                Save Media Forum Channel
+              </button>
               <button
                 className="button danger"
                 disabled={busy}
@@ -856,6 +896,9 @@ export const App = () => {
               >
                 Delete All Transcripts
               </button>
+              <span className="muted">
+                Active media forum: {settings.mediaForumChannelId ? `#${forumChannels.find((channel) => channel.id === settings.mediaForumChannelId)?.name || settings.mediaForumChannelId}` : "none"}
+              </span>
             </div>
           )}
           {transcripts.length === 0 ? (
