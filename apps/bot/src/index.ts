@@ -2231,7 +2231,7 @@ internalApp.post("/internal/tickets/force-close-open", async (req, res) => {
 });
 
 const start = async () => {
-  const port = Number(process.env.INTERNAL_PORT || 3002);
+  const port = Number(process.env.PORT || process.env.INTERNAL_PORT || 3002);
   internalApp.listen(port, () => {
     console.log(`Bot internal server on ${port}`);
   });
