@@ -11,6 +11,11 @@ import { transcriptsRouter } from "./routes/transcripts.js";
 
 export const createApp = () => {
   const app = express();
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (isProduction) {
+    app.set("trust proxy", 1);
+  }
 
   app.use(
     cors({
@@ -22,12 +27,13 @@ export const createApp = () => {
   app.use(
     session({
       secret: process.env.SESSION_SECRET || "change-me",
+      proxy: isProduction,
       resave: false,
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
+        secure: isProduction,
+        sameSite: isProduction ? "none" : "lax",
         maxAge: 1000 * 60 * 60 * 8
       }
     })
