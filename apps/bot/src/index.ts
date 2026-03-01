@@ -203,6 +203,7 @@ const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; chann
 type MediaPostLinkData = {
   threadId: string;
   forumChannelId: string;
+  starterMessageId?: string;
 };
 
 const isPrismaPoolTimeout = (error: unknown) => {
@@ -305,8 +306,6 @@ const getMediaForumChannelIdForGuild = async (guildId: string) => {
       guildSettings.mediaArchiveChannelId ||
       process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
       process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
-      guildSettings.transcriptChannelId ||
-      process.env.TRANSCRIPT_CHANNEL_ID ||
       "";
   } catch {
     channelId =
@@ -314,7 +313,6 @@ const getMediaForumChannelIdForGuild = async (guildId: string) => {
       process.env.ATTACHMENT_FORUM_CHANNEL_ID ||
       process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
       process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
-      process.env.TRANSCRIPT_CHANNEL_ID ||
       "";
   }
 
@@ -330,13 +328,14 @@ const parseMediaPostLinkData = (value: unknown): MediaPostLinkData | null => {
   if (!value || typeof value !== "object") {
     return null;
   }
-  const candidate = value as { threadId?: unknown; forumChannelId?: unknown };
+  const candidate = value as { threadId?: unknown; forumChannelId?: unknown; starterMessageId?: unknown };
   if (typeof candidate.threadId !== "string" || typeof candidate.forumChannelId !== "string") {
     return null;
   }
   return {
     threadId: candidate.threadId,
-    forumChannelId: candidate.forumChannelId
+    forumChannelId: candidate.forumChannelId,
+    starterMessageId: typeof candidate.starterMessageId === "string" ? candidate.starterMessageId : undefined
   };
 };
 
@@ -383,7 +382,8 @@ const createMediaBackupThread = async (
   await thread.send(`Ticket UUID: ${ticket.id}`).catch(() => null);
   await saveTicketMediaPostLink(ticket.id, actorId, {
     threadId: thread.id,
-    forumChannelId: backupChannel.id
+    forumChannelId: backupChannel.id,
+    starterMessageId: starterMessage.id
   });
 
   return thread;
@@ -461,7 +461,7 @@ const createMediaPostWithFirstMessage = async (
     }
   });
 
-  for (let index = 1; index < attachmentChunks.length; index += 1) {
+  for (let index = 0; index < attachmentChunks.length; index += 1) {
     await created.send({
       embeds: [buildMediaEmbed(ticketLabel, message)],
       files: attachmentChunks[index]
@@ -526,15 +526,27 @@ const forwardMediaToTicketPost = async (
 };
 
 const syncTicketMediaPostTitle = async (ticket: { id: string }, title: string) => {
-  const linkedThread = await getLinkedMediaThread(ticket.id);
-  if (!linkedThread) {
+  const link = await getTicketMediaPostLink(ticket.id);
+  if (!link?.starterMessageId) {
     return;
   }
+
+  const parentChannel = await client.channels.fetch(link.forumChannelId).catch(() => null);
+  if (!parentChannel || parentChannel.type !== ChannelType.GuildText) {
+    return;
+  }
+
+  const starterMessage = await parentChannel.messages.fetch(link.starterMessageId).catch(() => null);
+  if (!starterMessage) {
+    return;
+  }
+
   const normalized = title.trim().slice(0, 100);
-  if (!normalized || linkedThread.name === normalized) {
+  if (!normalized) {
     return;
   }
-  await linkedThread.setName(normalized).catch(() => null);
+
+  await starterMessage.edit(`Media backup thread for ${normalized}`).catch(() => null);
 };
 
 const finalizeTicketMediaPost = async (ticket: {
