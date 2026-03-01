@@ -20,7 +20,7 @@ discordRouter.get("/channels", requireSession, requireStaff, async (req, res) =>
   try {
     const channels = await fetchGuildChannels(guildId);
     const normalized = channels
-      .filter((channel) => [0, 4, 5].includes(channel.type))
+      .filter((channel) => [0, 4, 5, 15].includes(channel.type))
       .map((channel) => ({
         id: channel.id,
         name: channel.name,

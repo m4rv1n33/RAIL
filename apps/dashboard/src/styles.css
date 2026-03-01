@@ -235,9 +235,31 @@ textarea {
   flex-wrap: wrap;
 }
 
-.superuser-setting-field {
-  min-width: 240px;
-  flex: 1 1 260px;
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  padding: 16px;
+}
+
+.modal-window {
+  width: min(460px, 100%);
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-window h3 {
+  margin: 0;
+  font-size: 18px;
 }
 
 .list {

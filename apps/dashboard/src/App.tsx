@@ -135,6 +135,8 @@ export const App = () => {
   const [panelChannelId, setPanelChannelId] = useState("");
   const [transcriptChannelId, setTranscriptChannelId] = useState("");
   const [mediaForumChannelId, setMediaForumChannelId] = useState("");
+  const [mediaForumChannelDraft, setMediaForumChannelDraft] = useState("");
+  const [mediaForumModalOpen, setMediaForumModalOpen] = useState(false);
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
@@ -192,6 +194,7 @@ export const App = () => {
     setSettings(loadedSettings);
     setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
     setMediaForumChannelId(loadedSettings.mediaForumChannelId || "");
+    setMediaForumChannelDraft(loadedSettings.mediaForumChannelId || "");
     setTranscripts(transcriptData.transcripts || []);
   };
 
@@ -484,11 +487,14 @@ export const App = () => {
       const response = await apiFetch("/settings", {
         method: "PUT",
         body: JSON.stringify({
-          mediaForumChannelId: mediaForumChannelId || null
+          mediaForumChannelId: mediaForumChannelDraft || null
         })
       });
       setSettings(response.settings || {});
-      setMediaForumChannelId((response.settings?.mediaForumChannelId as string) || "");
+      const nextValue = (response.settings?.mediaForumChannelId as string) || "";
+      setMediaForumChannelId(nextValue);
+      setMediaForumChannelDraft(nextValue);
+      setMediaForumModalOpen(false);
       alert("Media forum channel saved.");
     } catch (error) {
       notifyErrorOnce(getErrorMessage(error, "Unable to save media forum channel"));
@@ -837,23 +843,15 @@ export const App = () => {
           <h2>Transcripts</h2>
           {user?.isSuperuser && (
             <div className="actions">
-              <label className="superuser-setting-field">
-                Media Forum Channel
-                <select value={mediaForumChannelId} onChange={(e) => setMediaForumChannelId(e.target.value)}>
-                  <option value="">None</option>
-                  {forumChannels.map((channel) => (
-                    <option key={channel.id} value={channel.id}>
-                      {channel.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <button
-                className="button secondary"
+                className="button danger"
                 disabled={busy}
-                onClick={saveMediaForumSettings}
+                onClick={() => {
+                  setMediaForumChannelDraft(mediaForumChannelId);
+                  setMediaForumModalOpen(true);
+                }}
               >
-                Save Media Forum Channel
+                Change Media Backup Channel
               </button>
               <button
                 className="button danger"
@@ -899,6 +897,32 @@ export const App = () => {
               <span className="muted">
                 Active media forum: {settings.mediaForumChannelId ? `#${forumChannels.find((channel) => channel.id === settings.mediaForumChannelId)?.name || settings.mediaForumChannelId}` : "none"}
               </span>
+            </div>
+          )}
+          {user?.isSuperuser && mediaForumModalOpen && (
+            <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Change media backup channel">
+              <div className="modal-window">
+                <h3>Change Media Backup Channel</h3>
+                <label>
+                  Forum Channel
+                  <select value={mediaForumChannelDraft} onChange={(e) => setMediaForumChannelDraft(e.target.value)}>
+                    <option value="">None</option>
+                    {forumChannels.map((channel) => (
+                      <option key={channel.id} value={channel.id}>
+                        {channel.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="actions">
+                  <button className="button" onClick={saveMediaForumSettings} disabled={busy}>
+                    Save
+                  </button>
+                  <button className="button secondary" onClick={() => setMediaForumModalOpen(false)} disabled={busy}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
             </div>
           )}
           {transcripts.length === 0 ? (
