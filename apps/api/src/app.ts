@@ -34,7 +34,7 @@ export const createApp = () => {
   );
 
   app.get("/health", (req, res) => {
-    res.json({ ok: true });
+    res.json({ ok: true, service: "UKRRP Ticket System API" });
   });
 
   app.use("/auth", authRouter);

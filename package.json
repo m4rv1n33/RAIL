@@ -1,16 +1,16 @@
 {
-  "name": "rail",
+  "name": "ukrrp-ticket-system",
   "private": true,
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev:api": "npm run dev -w @rail/api",
-    "dev:bot": "npm run dev -w @rail/bot",
-    "dev:dashboard": "npm run dev -w @rail/dashboard",
-    "build": "npm run build -ws",
-    "db:generate": "npm run db:generate -w @rail/db",
-    "db:migrate": "npm run db:migrate -w @rail/db"
+    "dev:api": "npm run dev -w @ukrrp/api",
+    "dev:bot": "npm run dev -w @ukrrp/bot",
+    "dev:dashboard": "npm run dev -w @ukrrp/dashboard",
+    "build": "npm run build -w @ukrrp/shared && npm run build -w @ukrrp/db && npm run build -w @ukrrp/api && npm run build -w @ukrrp/bot && npm run build -w @ukrrp/dashboard",
+    "db:generate": "npm run db:generate -w @ukrrp/db",
+    "db:migrate": "npm run db:migrate -w @ukrrp/db"
   }
 }

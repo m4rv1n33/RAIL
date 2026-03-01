@@ -26,8 +26,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { prisma } from "@rail/db";
-import { TicketStatus } from "@rail/shared";
+import { prisma } from "@ukrrp/db";
+import { TicketStatus } from "@ukrrp/shared";
 import { initDiscordLogRelay } from "./logRelay.js";
 
 config({ path: new URL("../.env", import.meta.url) });
@@ -187,7 +187,8 @@ const toDiscordTimestamp = (value?: string) => {
   return `<t:${unix}:F>`;
 };
 
-const BRAND_FOOTER = "Powered by RAIL • built by @m4rv1n_33";
+const APP_NAME = "UKRRP Ticket System";
+const BRAND_FOOTER = "Powered by RAIL, built by @m4rv1n_33";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
 
 type AutocompleteTeam = { id: string; name: string };
@@ -318,6 +319,7 @@ const buildPanelEmbed = async (panelId: string) => {
   const embed = new EmbedBuilder()
     .setTitle(panel.title)
     .setDescription(panel.description)
+    .setColor("#1938b4")
     .setFooter({ text: BRAND_FOOTER });
   panel.categories
     .filter((link) => link.enabled && link.category.enabled)
@@ -922,7 +924,7 @@ const buildTranscriptHtml = (
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ticket Transcript ${escapeHtml(ticketLabel)}</title>
+    <title>${escapeHtml(APP_NAME)} • Ticket Transcript ${escapeHtml(ticketLabel)}</title>
     <style>
       :root {
         color-scheme: light;
@@ -948,13 +950,15 @@ const buildTranscriptHtml = (
       }
       .meta { font-size: 12px; color: #475569; margin-bottom: 6px; }
       .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+      .brand { margin-top: 14px; font-size: 12px; color: #64748b; }
     </style>
   </head>
   <body>
     <main class="wrap">
       <section class="card">
-        <h1>Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
+        <h1>${escapeHtml(APP_NAME)} • Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
         ${rows || "<p>No messages captured.</p>"}
+        <div class="brand">${escapeHtml(BRAND_FOOTER)}</div>
       </section>
     </main>
   </body>

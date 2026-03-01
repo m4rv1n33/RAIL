@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { prisma } from "@rail/db";
+import { prisma } from "@ukrrp/db";
 import { Prisma } from "@prisma/client";
-import { panelConfigSchema, panelUpdateSchema } from "@rail/shared";
+import { panelConfigSchema, panelUpdateSchema } from "@ukrrp/shared";
 import { requireSession, requireStaff } from "../middleware/auth.js";
 import { syncPanelMessage } from "../services/panels.js";
 

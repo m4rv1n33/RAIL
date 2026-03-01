@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { prisma } from "@rail/db";
+import { prisma } from "@ukrrp/db";
 import { Prisma } from "@prisma/client";
-import { categorySchema } from "@rail/shared";
-import { TicketStatus } from "@rail/shared";
+import { categorySchema } from "@ukrrp/shared";
+import { TicketStatus } from "@ukrrp/shared";
 import { requireSession, requireStaff } from "../middleware/auth.js";
 
 export const categoriesRouter = Router();

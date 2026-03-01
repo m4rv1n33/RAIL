@@ -59,7 +59,8 @@ type TranscriptDetail = {
 };
 
 export const App = () => {
-  const brandingFooter = "Powered by RAIL • built by @m4rv1n_33";
+  const appName = "UKRRP Ticket System";
+  const brandingFooter = "Powered by RAIL, built by @m4rv1n_33";
   const [user, setUser] = useState<User | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -409,7 +410,7 @@ export const App = () => {
     return (
       <div className="page">
         <div className="card login-card">
-          <h1>Rail Dashboard</h1>
+          <h1>{appName}</h1>
           <p>Sign in with Discord to manage tickets and panels.</p>
           <a className="button" href={`${import.meta.env.VITE_API_BASE}/auth/login`}>
             Log in with Discord
@@ -455,7 +456,7 @@ export const App = () => {
     <div className="page">
       <header className="hero">
         <div>
-          <h1>Rail Dashboard</h1>
+          <h1>{appName}</h1>
           <p>Manage teams, categories, and ticket panels from one clean workspace.</p>
         </div>
         <button

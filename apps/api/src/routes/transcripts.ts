@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { prisma } from "@rail/db";
+import { prisma } from "@ukrrp/db";
 import { requireSession, requireStaff } from "../middleware/auth.js";
 import { fetchDiscordUserById } from "../services/discord.js";
 import { forceCloseOpenTickets } from "../services/tickets.js";
