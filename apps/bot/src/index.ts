@@ -2,6 +2,7 @@ import { config } from "dotenv";
 import express from "express";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -189,6 +190,9 @@ const toDiscordTimestamp = (value?: string) => {
 
 const APP_NAME = "UKRRP Ticket System";
 const BRAND_FOOTER = "Powered by RAIL, built by @m4rv1n_33";
+const PRIMARY_EMBED_COLOR = "#1938b4";
+const PANEL_TOP_BANNER_NAME = "top.png";
+const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
 
 type AutocompleteTeam = { id: string; name: string };
@@ -238,6 +242,18 @@ const getSettingsFilePath = () => {
     path.resolve(process.cwd(), "..", "..", "data", "guild-settings.json")
   ];
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
+};
+
+const getAssetFilePath = (fileName: string) => {
+  const candidates = [
+    path.resolve(process.cwd(), "assets", fileName),
+    path.resolve(process.cwd(), "..", "..", "assets", fileName)
+  ];
+  const resolved = candidates.find((candidate) => existsSync(candidate));
+  if (!resolved) {
+    throw new Error(`asset_not_found:${fileName}`);
+  }
+  return resolved;
 };
 
 const getTranscriptChannelIdForGuild = async (guildId: string) => {
@@ -316,11 +332,15 @@ const buildPanelEmbed = async (panelId: string) => {
   if (!panel) {
     throw new Error("panel_not_found");
   }
+  const topBanner = new EmbedBuilder().setColor(PRIMARY_EMBED_COLOR).setImage(`attachment://${PANEL_TOP_BANNER_NAME}`);
   const embed = new EmbedBuilder()
     .setTitle(panel.title)
     .setDescription(panel.description)
-    .setColor("#1938b4")
+    .setColor(PRIMARY_EMBED_COLOR)
     .setFooter({ text: BRAND_FOOTER });
+  const bottomBanner = new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setImage(`attachment://${PANEL_BOTTOM_BANNER_NAME}`);
   panel.categories
     .filter((link) => link.enabled && link.category.enabled)
     .forEach((link) => {
@@ -340,7 +360,11 @@ const buildPanelEmbed = async (panelId: string) => {
     .setPlaceholder("Select a category")
     .addOptions(options);
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-  return { panel, embed, components: [row] };
+  const files = [
+    new AttachmentBuilder(getAssetFilePath(PANEL_TOP_BANNER_NAME), { name: PANEL_TOP_BANNER_NAME }),
+    new AttachmentBuilder(getAssetFilePath(PANEL_BOTTOM_BANNER_NAME), { name: PANEL_BOTTOM_BANNER_NAME })
+  ];
+  return { panel, embeds: [topBanner, embed, bottomBanner], components: [row], files };
 };
 
 const buildPermissionOverwrites = async (guildId: string, userId: string, supportTeamId: string) => {
@@ -380,7 +404,7 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
 };
 
 const publishPanel = async (panelId: string) => {
-  const { panel, embed, components } = await buildPanelEmbed(panelId);
+  const { panel, embeds, components, files } = await buildPanelEmbed(panelId);
   const guild = await client.guilds.fetch(panel.guildId);
   const channel = await guild.channels.fetch(panel.channelId);
   if (!channel || channel.type !== ChannelType.GuildText) {
@@ -389,11 +413,11 @@ const publishPanel = async (panelId: string) => {
   if (panel.messageId) {
     const message = await channel.messages.fetch(panel.messageId).catch(() => null);
     if (message) {
-      await message.edit({ embeds: [embed], components });
+      await message.edit({ embeds, components, files });
       return;
     }
   }
-  const message = await channel.send({ embeds: [embed], components });
+  const message = await channel.send({ embeds, components, files });
   await prisma.ticketPanel.update({
     where: { id: panel.id },
     data: { messageId: message.id }
@@ -570,6 +594,7 @@ const createTicket = async (
     .setDescription(
       "Please send your issue details so the team can help quickly.\n\nThis ticket auto-closes after 48 hours of inactivity and will be closed if there is no reply within the first 30 minutes."
     )
+    .setColor(PRIMARY_EMBED_COLOR)
     .setFooter({ text: BRAND_FOOTER });
   const roleMentions = team.roles.map((role) => `<@&${role.roleId}>`).join(" ");
   await channel.send({
@@ -1045,6 +1070,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       const closedByValue = actorId === "system" ? "System" : `<@${actorId}>`;
       const transcriptUrl = getDashboardTranscriptUrl(ticket.id);
       const embed = new EmbedBuilder()
+        .setColor(PRIMARY_EMBED_COLOR)
         .setTitle(`${ticketLabel} Closed`)
         .setDescription("Ticket transcript has been logged. Use the button below to view it in the dashboard.")
         .addFields(
@@ -1425,6 +1451,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const reason = interaction.options.getString("reason", true).trim();
       const embed = new EmbedBuilder()
+        .setColor(PRIMARY_EMBED_COLOR)
         .setTitle("Ticket Closure Requested")
         .setDescription(`This ticket has been marked for closure review by <@${interaction.user.id}>.`)
         .addFields(
@@ -1549,7 +1576,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
       const ticket = await createTicket(interaction.guildId, interaction.user.id, category);
       const refreshed = await buildPanelEmbed(panel.id);
-      await interaction.editReply({ embeds: [refreshed.embed], components: refreshed.components });
+      await interaction.editReply({ embeds: refreshed.embeds, components: refreshed.components, files: refreshed.files });
       await interaction.followUp({
         content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
         flags: MessageFlags.Ephemeral
