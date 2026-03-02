@@ -2342,20 +2342,6 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (renameInFlightByChannel.has(channel.id)) {
-        await interaction.editReply({ content: "A rename is already being processed for this ticket. Please wait a few seconds and try again." });
-        return;
-      }
-
-      const now = Date.now();
-      const lastRenameAt = lastRenameAtByChannel.get(channel.id) || 0;
-      if (now - lastRenameAt < RENAME_MIN_INTERVAL_MS) {
-        const waitSeconds = Math.ceil((RENAME_MIN_INTERVAL_MS - (now - lastRenameAt)) / 1000);
-        await interaction.editReply({ content: `Please wait ${waitSeconds}s before renaming this ticket again.` });
-        return;
-      }
-      lastRenameAtByChannel.set(channel.id, now);
-
       const customNameRaw = interaction.options.getString("name")?.trim() || "";
       const customName = customNameRaw
         .toLowerCase()
@@ -2365,8 +2351,22 @@ client.on("interactionCreate", async (interaction) => {
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
 
+      if (channel.name === nextName) {
+        await interaction.editReply({ content: `Ticket is already named **${nextName}**.` });
+        return;
+      }
+
+      if (renameInFlightByChannel.has(channel.id)) {
+        await interaction.editReply({ content: "A rename is already being processed for this ticket. Please wait a few seconds and try again." });
+        return;
+      }
+
+      const now = Date.now();
+      const lastRenameAt = lastRenameAtByChannel.get(channel.id) || 0;
+      const remainingRenameWaitMs = Math.max(0, RENAME_MIN_INTERVAL_MS - (now - lastRenameAt));
+
       let renameDeferredInBackground = false;
-      const queueBackgroundRename = (reason: string) => {
+      const queueBackgroundRename = (reason: string, waitMs = 0) => {
         renameDeferredInBackground = true;
         console.info("[command] rename deferred to background", {
           ticketId: ticket.id,
@@ -2374,12 +2374,17 @@ client.on("interactionCreate", async (interaction) => {
           channelId: interaction.channelId,
           userId: interaction.user.id,
           nextName,
-          reason
+          reason,
+          waitMs
         });
 
-        const backgroundPromise = enqueueChannelMutation(channel.id, () =>
-          renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
-        )
+        const backgroundPromise = enqueueChannelMutation(channel.id, async () => {
+          if (waitMs > 0) {
+            await sleep(waitMs);
+          }
+          lastRenameAtByChannel.set(channel.id, Date.now());
+          await renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 });
+        })
           .then(() => {
             console.info("[command] rename background success", {
               ticketId: ticket.id,
@@ -2421,9 +2426,12 @@ client.on("interactionCreate", async (interaction) => {
       };
 
       if (channelMutationQueue.has(channel.id)) {
-        queueBackgroundRename("channel_mutation_queue_busy");
+        queueBackgroundRename("channel_mutation_queue_busy", remainingRenameWaitMs);
+      } else if (remainingRenameWaitMs > 0) {
+        queueBackgroundRename("rename_rate_limit", remainingRenameWaitMs);
       } else {
         try {
+          lastRenameAtByChannel.set(channel.id, Date.now());
           await withTimeout(
             enqueueChannelMutation(channel.id, () =>
               renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 7000 })
