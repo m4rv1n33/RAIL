@@ -746,6 +746,7 @@ const buildPanelEmbed = async (panelId: string) => {
 
 const buildPermissionOverwrites = async (guildId: string, userId: string, supportTeamId: string) => {
   const guild = await client.guilds.fetch(guildId);
+  const botMemberId = guild.members.me?.id || client.user?.id || null;
   const team = await prisma.supportTeam.findFirst({
     where: { id: supportTeamId },
     include: { roles: true }
@@ -758,6 +759,20 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
       id: guild.roles.everyone.id,
       deny: [PermissionsBitField.Flags.ViewChannel]
     },
+    ...(botMemberId
+      ? [
+          {
+            id: botMemberId,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.ManageChannels,
+              PermissionsBitField.Flags.ManageMessages
+            ]
+          }
+        ]
+      : []),
     {
       id: userId,
       allow: [
@@ -2228,7 +2243,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
     try {
       await interaction.deferReply();
-      const ticket = await withTimeout(getTicketByChannel(interaction.channelId), 6000, "rename_ticket_lookup_timeout");
+      const ticket = await getTicketByChannel(interaction.channelId);
       if (!ticket) {
         await interaction.editReply({ content: "Use this in a ticket channel." });
         return;
@@ -2236,27 +2251,15 @@ client.on("interactionCreate", async (interaction) => {
       const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
       let roleIds = getInteractionRoleIds(interaction);
       if (!requesterIsSuperuser && roleIds.length === 0) {
-        const member = await withTimeout(
-          interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
-          6000,
-          "rename_member_fetch_timeout"
-        );
+        const member = await (interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null));
         roleIds = member?.roles.cache.map((role) => role.id) || [];
       }
-      const canManage = await withTimeout(
-        canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket),
-        6000,
-        "rename_permission_check_timeout"
-      );
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
       if (!canManage) {
         await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
         return;
       }
-      const channel = await withTimeout(
-        client.channels.fetch(ticket.channelId).catch(() => null),
-        6000,
-        "rename_channel_fetch_timeout"
-      );
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
       if (!channel || channel.type !== ChannelType.GuildText) {
         await interaction.editReply({ content: "Ticket channel not found." });
         return;
@@ -2269,12 +2272,8 @@ client.on("interactionCreate", async (interaction) => {
         .replace(/^-|-$/g, "");
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
-      await withTimeout(channel.setName(nextName), 8000, "rename_channel_update_timeout");
-      await withTimeout(
-        prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
-        6000,
-        "rename_ticket_update_timeout"
-      );
+      await channel.setName(nextName);
+      await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
       await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
 
       void withTimeout(syncTicketMediaPostTitle(ticket, nextName), 6000, "rename_media_title_sync_timeout").catch((error) => {
@@ -2311,6 +2310,7 @@ client.on("interactionCreate", async (interaction) => {
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         userId: interaction.user.id,
+        message: error instanceof Error ? error.message : "unknown_error",
         error
       });
       try {
