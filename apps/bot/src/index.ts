@@ -1260,14 +1260,20 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-const isDiscordImageUrl = (value: string) => {
+const isImageUrl = (value: string) => {
   try {
     const parsed = new URL(value);
-    const host = parsed.hostname.toLowerCase();
-    if (!host.includes("discordapp.com") && !host.includes("discordapp.net")) {
-      return false;
+    const pathname = parsed.pathname.toLowerCase();
+    if (/\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(pathname)) {
+      return true;
     }
-    return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(parsed.pathname);
+
+    const format = parsed.searchParams.get("format")?.toLowerCase() || "";
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"].includes(format)) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }
@@ -1289,7 +1295,7 @@ const renderTranscriptContentHtml = (raw: string) => {
     }
 
     const safeUrl = escapeHtml(url);
-    if (isDiscordImageUrl(url)) {
+    if (isImageUrl(url)) {
       parts.push(
         `<div class="attachment"><a class="link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a><img src="${safeUrl}" alt="Attachment" loading="lazy" /></div>`
       );
@@ -1332,10 +1338,15 @@ const buildTranscriptHtml = (
       :root {
         color-scheme: dark;
         font-family: "Inter", "Segoe UI", sans-serif;
+        color: #e2e8f0;
+      }
+      html, body {
+        margin: 0;
+        min-height: 100%;
         background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
         color: #e2e8f0;
       }
-      body { margin: 0; padding: 24px; }
+      body { padding: 24px; }
       .wrap { max-width: 960px; margin: 0 auto; }
       .card {
         background: #0f172a;
@@ -1368,6 +1379,9 @@ const buildTranscriptHtml = (
       @media (prefers-color-scheme: light) {
         :root {
           color-scheme: light;
+          color: #0f172a;
+        }
+        html, body {
           background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
           color: #0f172a;
         }
