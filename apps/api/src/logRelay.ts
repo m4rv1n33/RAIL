@@ -30,9 +30,11 @@ export const initDiscordLogRelay = (serviceName: string) => {
   if (initialized) {
     return;
   }
+  const webhookUrl = (process.env.DISCORD_LOG_WEBHOOK_URL || "").trim();
   const token = (process.env.DISCORD_BOT_TOKEN || "").trim();
   const channelId = (process.env.DISCORD_LOG_CHANNEL_ID || "").trim();
-  if (!token || !channelId) {
+  const canUseChannelFallback = Boolean(token && channelId);
+  if (!webhookUrl && !canUseChannelFallback) {
     return;
   }
 
@@ -47,14 +49,27 @@ export const initDiscordLogRelay = (serviceName: string) => {
     sending = true;
     const content = queue.shift()!;
     try {
-      await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ content })
-      });
+      let delivered = false;
+
+      if (webhookUrl) {
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content })
+        });
+        delivered = response.ok;
+      }
+
+      if (!delivered && canUseChannelFallback) {
+        await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bot ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ content })
+        });
+      }
     } catch {
       // Do not log relay failures to avoid recursion.
     } finally {
