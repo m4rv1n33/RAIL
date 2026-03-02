@@ -2265,6 +2265,19 @@ const startInactivityMonitor = () => {
 
 const internalApp = express();
 internalApp.use(express.json());
+internalApp.use((req, res, next) => {
+  const startedAt = Date.now();
+  const cfRay = String(req.headers["cf-ray"] || "");
+  const cfIp = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "");
+  const userAgent = String(req.headers["user-agent"] || "");
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    console.info(
+      `[bot-internal] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms) ip=${cfIp || "unknown"} cfRay=${cfRay || "none"} ua=${userAgent || "unknown"}`
+    );
+  });
+  next();
+});
 internalApp.post("/internal/panels/:id/sync", async (req, res) => {
   const secret = String(req.headers["x-internal-secret"] || "");
   if (!secret || secret !== process.env.BOT_INTERNAL_SECRET) {

@@ -250,6 +250,51 @@ export const App = () => {
   }, [user, transcriptTicketId]);
 
   useEffect(() => {
+    if (!user) {
+      return;
+    }
+    const viewingTranscripts = activeTab === "transcripts" || routeHash.startsWith("#/transcripts");
+    if (!viewingTranscripts) {
+      return;
+    }
+
+    const refreshTranscripts = async () => {
+      try {
+        const transcriptData = await apiFetch("/transcripts");
+        setTranscripts(transcriptData.transcripts || []);
+      } catch (error) {
+        console.warn("[dashboard] transcript auto-refresh failed", error);
+      }
+    };
+
+    void refreshTranscripts();
+    const timer = window.setInterval(() => {
+      void refreshTranscripts();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [user, activeTab, routeHash]);
+
+  useEffect(() => {
+    if (!user || !transcriptTicketId) {
+      return;
+    }
+
+    const refreshDetail = async () => {
+      try {
+        const data = await apiFetch(`/transcripts/${transcriptTicketId}`);
+        setActiveTranscript((data.transcript || null) as TranscriptDetail | null);
+      } catch (error) {
+        console.warn("[dashboard] transcript detail auto-refresh failed", error);
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshDetail();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [user, transcriptTicketId]);
+
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);

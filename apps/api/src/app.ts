@@ -24,6 +24,19 @@ export const createApp = () => {
     })
   );
   app.use(express.json({ limit: "1mb" }));
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+    const cfRay = String(req.headers["cf-ray"] || "");
+    const cfIp = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "");
+    const userAgent = String(req.headers["user-agent"] || "");
+    res.on("finish", () => {
+      const durationMs = Date.now() - startedAt;
+      console.info(
+        `[api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms) ip=${cfIp || "unknown"} cfRay=${cfRay || "none"} ua=${userAgent || "unknown"}`
+      );
+    });
+    next();
+  });
   app.use(
     session({
       secret: process.env.SESSION_SECRET || "change-me",
