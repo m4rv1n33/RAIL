@@ -2297,13 +2297,59 @@ client.on("interactionCreate", async (interaction) => {
         .replace(/^-|-$/g, "");
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
-      await renameTextChannelWithRetry(channel, nextName);
+
+      let renameDeferredInBackground = false;
+      try {
+        await withTimeout(
+          renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 10000 }),
+          10000,
+          "rename_channel_quick_attempt_timeout"
+        );
+      } catch (error) {
+        renameDeferredInBackground = true;
+        console.warn("[command] rename quick attempt deferred to background", {
+          ticketId: ticket.id,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          userId: interaction.user.id,
+          nextName,
+          message: error instanceof Error ? error.message : "unknown_error",
+          error
+        });
+
+        void renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
+          .then(() => {
+            console.info("[command] rename background success", {
+              ticketId: ticket.id,
+              guildId: interaction.guildId,
+              channelId: interaction.channelId,
+              userId: interaction.user.id,
+              nextName
+            });
+          })
+          .catch((backgroundError) => {
+            console.warn("[command] rename background failed", {
+              ticketId: ticket.id,
+              guildId: interaction.guildId,
+              channelId: interaction.channelId,
+              userId: interaction.user.id,
+              nextName,
+              message: backgroundError instanceof Error ? backgroundError.message : "unknown_error",
+              error: backgroundError
+            });
+          });
+      }
+
       await withTimeout(
         prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
         10000,
         "rename_ticket_update_timeout"
       );
-      await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
+      await interaction.editReply({
+        content: renameDeferredInBackground
+          ? `Rename request accepted for **${nextName}**. Discord is processing it in the background.`
+          : `Ticket renamed to **${nextName}**.`
+      });
 
       void withTimeout(
         prisma.ticketEvent.create({
@@ -2332,6 +2378,8 @@ client.on("interactionCreate", async (interaction) => {
           message = "Rename timed out while checking member permissions. Please try again.";
         } else if (error.message.startsWith("rename_channel_setname_timeout_attempt_")) {
           message = "Rename timed out while updating the channel name. Please try again.";
+        } else if (error.message === "rename_channel_quick_attempt_timeout") {
+          message = "Discord is slow right now. Rename request has been queued in background.";
         } else if (error.message.startsWith("rename_channel_refetch_timeout_attempt_")) {
           message = "Rename timed out while verifying channel state. Please try again.";
         } else if (error.message === "rename_ticket_update_timeout") {
