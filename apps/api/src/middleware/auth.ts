@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { fetchCurrentUserGuild, fetchCurrentUserGuildMember, fetchGuildMember, fetchGuildRoles } from "../services/discord.js";
+import { fetchCurrentUserGuild, fetchCurrentUserGuildMember, fetchGuildMember } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 
 declare module "express-session" {
@@ -22,47 +22,59 @@ export const requireSession = (req: Request, res: Response, next: NextFunction) 
   next();
 };
 
-export const requireStaff = async (req: Request, res: Response, next: NextFunction) => {
+const STAFF_TRANSCRIPTS_ROLE_ID = "1406675931589902466";
+const MANAGEMENT_ROLE_IDS = new Set<string>(["1407413756971188346", "1469431145161818123"]);
+const ADMIN_PERMISSION = 0x8n;
+
+type AccessEvaluation = {
+  isSuperuser: boolean;
+  isAdmin: boolean;
+  hasStaffRole: boolean;
+  hasManagementRole: boolean;
+};
+
+const hasOAuthAdminPermission = async (res: Response, userAccessToken: string, guildId: string) => {
+  try {
+    const guild = (await fetchCurrentUserGuild(userAccessToken, guildId)) as
+      | { permissions?: string; permissions_new?: string }
+      | null;
+    const permissionsRaw = guild?.permissions_new || guild?.permissions || "0";
+    const permissions = BigInt(permissionsRaw);
+    return (permissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "discord_user_guild_lookup_failed";
+    if (message === "user_token_invalid") {
+      res.status(401).json({ error: "reauth_required" });
+      return null;
+    }
+    return false;
+  }
+};
+
+export const evaluateAccess = async (req: Request, res: Response): Promise<AccessEvaluation | null> => {
   const user = req.session.user;
   const guildId = String(req.headers["x-guild-id"] || "");
-  const ADMIN_PERMISSION = 0x8n;
-
-  const hasOAuthAdminPermission = async () => {
-    try {
-      const guild = await fetchCurrentUserGuild(user!.accessToken, guildId) as { permissions?: string; permissions_new?: string } | null;
-      const permissionsRaw = guild?.permissions_new || guild?.permissions || "0";
-      const permissions = BigInt(permissionsRaw);
-      return (permissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "discord_user_guild_lookup_failed";
-      if (message === "user_token_invalid") {
-        res.status(401).json({ error: "reauth_required" });
-        return null;
-      }
-      return false;
-    }
-  };
 
   if (!user || !guildId) {
     res.status(401).json({ error: "unauthorized" });
-    return;
+    return null;
   }
-  if (isConfiguredSuperuser(user.id)) {
-    console.warn(
-      [
-        "⚠️ SuperUser bypass detected",
-        `action=api.requireStaff`,
-        `by=${user.username} (${user.id})`,
-        `when=${new Date().toISOString()}`,
-        `guild=${guildId}`,
-        `method=${req.method}`,
-        `path=${req.originalUrl}`,
-        "details=Admin/staff restriction bypassed"
-      ].join(" | ")
-    );
-    next();
-    return;
+
+  const isSuperuser = isConfiguredSuperuser(user.id);
+  if (isSuperuser) {
+    return {
+      isSuperuser: true,
+      isAdmin: true,
+      hasStaffRole: true,
+      hasManagementRole: true
+    };
   }
+
+  const oauthAdmin = await hasOAuthAdminPermission(res, user.accessToken, guildId);
+  if (oauthAdmin === null) {
+    return null;
+  }
+
   let member: { roles: string[] } | null = null;
   try {
     member = await fetchGuildMember(guildId, user.id);
@@ -72,68 +84,102 @@ export const requireStaff = async (req: Request, res: Response, next: NextFuncti
       member = await fetchCurrentUserGuildMember(user.accessToken, guildId);
     } catch (oauthError) {
       const oauthMessage = oauthError instanceof Error ? oauthError.message : "discord_user_member_lookup_failed";
-      if (oauthMessage === "user_token_invalid") {
+      if (oauthMessage === "user_token_invalid" || oauthMessage === "oauth_scope_missing") {
         res.status(401).json({ error: "reauth_required" });
-        return;
+        return null;
       }
-      if (oauthMessage === "oauth_scope_missing") {
-        res.status(401).json({ error: "reauth_required" });
-        return;
-      }
-      if (
-        message === "bot_token_missing" ||
-        message === "bot_auth_failed" ||
-        message === "bot_missing_access"
-      ) {
-        const oauthAdmin = await hasOAuthAdminPermission();
-        if (oauthAdmin === null) {
-          return;
-        }
+      if (message === "bot_token_missing" || message === "bot_auth_failed" || message === "bot_missing_access") {
         if (oauthAdmin) {
-          next();
-          return;
+          return {
+            isSuperuser: false,
+            isAdmin: true,
+            hasStaffRole: false,
+            hasManagementRole: false
+          };
         }
         res.status(500).json({ error: "discord_lookup_unavailable" });
-        return;
-      }
-      const oauthAdmin = await hasOAuthAdminPermission();
-      if (oauthAdmin === null) {
-        return;
+        return null;
       }
       if (oauthAdmin) {
-        next();
-        return;
+        return {
+          isSuperuser: false,
+          isAdmin: true,
+          hasStaffRole: false,
+          hasManagementRole: false
+        };
       }
       res.status(502).json({ error: "discord_lookup_failed" });
-      return;
+      return null;
     }
   }
+
   if (!member) {
     res.status(403).json({ error: "not_in_guild" });
+    return null;
+  }
+
+  const memberRoleSet = new Set(member.roles || []);
+  return {
+    isSuperuser: false,
+    isAdmin: oauthAdmin,
+    hasStaffRole: memberRoleSet.has(STAFF_TRANSCRIPTS_ROLE_ID),
+    hasManagementRole: [...MANAGEMENT_ROLE_IDS].some((roleId) => memberRoleSet.has(roleId))
+  };
+};
+
+export const requireDashboardAccess = async (req: Request, res: Response, next: NextFunction) => {
+  const user = req.session.user;
+  const guildId = String(req.headers["x-guild-id"] || "");
+  if (!user || !guildId) {
+    res.status(401).json({ error: "unauthorized" });
     return;
   }
 
-  const oauthAdmin = await hasOAuthAdminPermission();
-  if (oauthAdmin === null) {
+  const access = await evaluateAccess(req, res);
+  if (!access) {
     return;
   }
-  let isAdmin = oauthAdmin;
 
-  if (!isAdmin) {
-    try {
-      const roles = await fetchGuildRoles(guildId);
-      const roleIds = new Set<string>([...member.roles, guildId]);
-      const aggregatePermissions = roles
-        .filter((role) => roleIds.has(role.id))
-        .reduce((acc, role) => acc | BigInt(role.permissions || "0"), 0n);
-      isAdmin = (aggregatePermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
-    } catch {
-      res.status(502).json({ error: "discord_lookup_failed" });
-      return;
-    }
+  const allowed = access.isSuperuser || access.isAdmin || access.hasManagementRole || access.hasStaffRole;
+  if (!allowed) {
+    res.status(403).json({ error: "staff_required" });
+    return;
+  }
+  next();
+};
+
+export const requireManagementAccess = async (req: Request, res: Response, next: NextFunction) => {
+  const user = req.session.user;
+  const guildId = String(req.headers["x-guild-id"] || "");
+  if (!user || !guildId) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
   }
 
-  if (!isAdmin) {
+  const access = await evaluateAccess(req, res);
+  if (!access) {
+    return;
+  }
+
+  if (access.isSuperuser) {
+    console.warn(
+      [
+        "⚠️ SuperUser bypass detected",
+        `action=api.requireManagementAccess`,
+        `by=${user.username} (${user.id})`,
+        `when=${new Date().toISOString()}`,
+        `guild=${guildId}`,
+        `method=${req.method}`,
+        `path=${req.originalUrl}`,
+        "details=Management restriction bypassed"
+      ].join(" | ")
+    );
+    next();
+    return;
+  }
+
+  const allowed = access.isAdmin || access.hasManagementRole;
+  if (!allowed) {
     res.status(403).json({ error: "admin_required" });
     return;
   }

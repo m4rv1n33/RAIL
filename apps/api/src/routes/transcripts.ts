@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "@ukrrp/db";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireDashboardAccess, requireSession } from "../middleware/auth.js";
 import { fetchDiscordUserById } from "../services/discord.js";
 import { forceCloseOpenTickets } from "../services/tickets.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
@@ -29,7 +29,7 @@ const resolveUsernames = async (ids: string[]) => {
   return map;
 };
 
-transcriptsRouter.get("/", requireSession, requireStaff, async (req, res) => {
+transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const tickets = await prisma.ticket.findMany({
     where: { guildId },
@@ -70,7 +70,7 @@ transcriptsRouter.get("/", requireSession, requireStaff, async (req, res) => {
   });
 });
 
-transcriptsRouter.get("/:ticketId", requireSession, requireStaff, async (req, res) => {
+transcriptsRouter.get("/:ticketId", requireSession, requireDashboardAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const ticketId = String(req.params.ticketId || "");
   const ticket = await prisma.ticket.findFirst({

@@ -39,6 +39,10 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
             details = "Discord member lookup failed. Please try again in a moment.";
           } else if (body?.error === "discord_role_lookup_failed") {
             details = "Discord role lookup failed. Please check bot permissions and try again.";
+          } else if (body?.error === "staff_required") {
+            details = "You do not have access to this dashboard for the configured guild.";
+          } else if (body?.error === "admin_required") {
+            details = "You can view transcripts, but only management roles or administrators can access teams, categories, and panels.";
           } else if (body?.error === "superuser_only") {
             details = "Only the superuser account can delete all transcripts.";
           } else if (body?.error === "bot_internal_missing") {

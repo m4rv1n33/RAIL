@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 import { fetchGuildChannels, fetchGuildRoles } from "../services/discord.js";
 
 export const discordRouter = Router();
@@ -11,7 +11,7 @@ const toDiscordColorHex = (color?: number) => {
   return `#${color.toString(16).padStart(6, "0")}`;
 };
 
-discordRouter.get("/channels", requireSession, requireStaff, async (req, res) => {
+discordRouter.get("/channels", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   if (!guildId) {
     res.status(400).json({ error: "guild_id_missing" });
@@ -47,7 +47,7 @@ discordRouter.get("/channels", requireSession, requireStaff, async (req, res) =>
   }
 });
 
-discordRouter.get("/roles", requireSession, requireStaff, async (req, res) => {
+discordRouter.get("/roles", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   if (!guildId) {
     res.status(400).json({ error: "guild_id_missing" });

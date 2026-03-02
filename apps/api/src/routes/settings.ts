@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 import { getGuildSettings, setGuildSettings } from "../services/settings.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 
@@ -11,13 +11,13 @@ const updateSchema = z.object({
   mediaForumChannelId: z.string().optional().nullable()
 });
 
-settingsRouter.get("/", requireSession, requireStaff, async (req, res) => {
+settingsRouter.get("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const settings = await getGuildSettings(guildId);
   res.json({ settings });
 });
 
-settingsRouter.put("/", requireSession, requireStaff, async (req, res) => {
+settingsRouter.put("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const input = updateSchema.parse(req.body);
   const userId = String(req.session.user?.id || "");

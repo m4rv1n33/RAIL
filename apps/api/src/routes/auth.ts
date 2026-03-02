@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { exchangeCode, fetchDiscordUser } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
+import { evaluateAccess } from "../middleware/auth.js";
 
 export const authRouter = Router();
 
@@ -32,15 +33,32 @@ authRouter.get("/callback", async (req, res) => {
   res.redirect(process.env.DASHBOARD_ORIGIN || "/");
 });
 
-authRouter.get("/me", (req, res) => {
+authRouter.get("/me", async (req, res) => {
   const user = req.session.user || null;
+  if (!user) {
+    res.json({ user: null });
+    return;
+  }
+
+  let canAccessDashboard = false;
+  let canManage = false;
+  const guildId = String(req.headers["x-guild-id"] || "");
+  if (guildId) {
+    const access = await evaluateAccess(req, res);
+    if (!access) {
+      return;
+    }
+    canAccessDashboard = access.isSuperuser || access.isAdmin || access.hasManagementRole || access.hasStaffRole;
+    canManage = access.isSuperuser || access.isAdmin || access.hasManagementRole;
+  }
+
   res.json({
-    user: user
-      ? {
-          ...user,
-          isSuperuser: isConfiguredSuperuser(user.id)
-        }
-      : null
+    user: {
+      ...user,
+      isSuperuser: isConfiguredSuperuser(user.id),
+      canAccessDashboard,
+      canManage
+    }
   });
 });
 

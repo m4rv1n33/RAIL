@@ -3,7 +3,7 @@ import { prisma } from "@ukrrp/db";
 import { Prisma } from "@prisma/client";
 import { categorySchema } from "@ukrrp/shared";
 import { TicketStatus } from "@ukrrp/shared";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 
 export const categoriesRouter = Router();
 
@@ -24,7 +24,7 @@ const parseCategoryInput = (body: unknown) => {
   return { ok: true as const, data: result.data };
 };
 
-categoriesRouter.get("/", requireSession, requireStaff, async (req, res) => {
+categoriesRouter.get("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const categories = await prisma.ticketCategory.findMany({
     where: { guildId },
@@ -33,7 +33,7 @@ categoriesRouter.get("/", requireSession, requireStaff, async (req, res) => {
   res.json({ categories });
 });
 
-categoriesRouter.post("/", requireSession, requireStaff, async (req, res) => {
+categoriesRouter.post("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const parsed = parseCategoryInput(req.body);
   if (!parsed.ok) {
@@ -59,7 +59,7 @@ categoriesRouter.post("/", requireSession, requireStaff, async (req, res) => {
   }
 });
 
-categoriesRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
+categoriesRouter.put("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const id = String(req.params.id || "");
   const parsed = parseCategoryInput(req.body);
@@ -86,7 +86,7 @@ categoriesRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
   }
 });
 
-categoriesRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
+categoriesRouter.delete("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const id = String(req.params.id || "");
   const category = await prisma.ticketCategory.findFirst({

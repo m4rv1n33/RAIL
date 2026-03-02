@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiFetch } from "./api.js";
 
-type User = { id: string; isSuperuser?: boolean };
+type User = { id: string; isSuperuser?: boolean; canAccessDashboard?: boolean; canManage?: boolean };
 type Team = {
   id: string;
   name: string;
@@ -134,9 +134,6 @@ export const App = () => {
   const [panelDescription, setPanelDescription] = useState("Select a category below and our team will respond.");
   const [panelChannelId, setPanelChannelId] = useState("");
   const [transcriptChannelId, setTranscriptChannelId] = useState("");
-  const [mediaForumChannelId, setMediaForumChannelId] = useState("");
-  const [mediaForumChannelDraft, setMediaForumChannelDraft] = useState("");
-  const [mediaForumModalOpen, setMediaForumModalOpen] = useState(false);
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
@@ -164,7 +161,6 @@ export const App = () => {
 
   const categoryChannels = useMemo(() => channels.filter((channel) => channel.type === 4), [channels]);
   const textChannels = useMemo(() => channels.filter((channel) => channel.type === 0 || channel.type === 5), [channels]);
-  const mediaBackupChannels = useMemo(() => channels.filter((channel) => channel.type === 0), [channels]);
   const transcriptTicketId = useMemo(() => {
     const match = routeHash.match(/^#\/transcripts\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : null;
@@ -172,29 +168,53 @@ export const App = () => {
 
   const load = async () => {
     const me = await apiFetch("/auth/me");
-    setUser(me.user || null);
-    if (!me.user) {
+    const currentUser = me.user || null;
+    setUser(currentUser);
+    if (!currentUser) {
       return;
     }
-    const [teamData, categoryData, panelData, channelData, roleData, settingsData, transcriptData] = await Promise.all([
-      apiFetch("/teams"),
-      apiFetch("/categories"),
-      apiFetch("/panels"),
-      apiFetch("/discord/channels"),
-      apiFetch("/discord/roles"),
-      apiFetch("/settings"),
-      apiFetch("/transcripts")
-    ]);
-    setTeams(teamData.teams || []);
-    setCategories(categoryData.categories || []);
-    setPanels(panelData.panels || []);
-    setChannels(channelData.channels || []);
-    setRoles(roleData.roles || []);
-    const loadedSettings = settingsData.settings || {};
-    setSettings(loadedSettings);
-    setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
-    setMediaForumChannelId(loadedSettings.mediaForumChannelId || "");
-    setMediaForumChannelDraft(loadedSettings.mediaForumChannelId || "");
+    if (!currentUser.canAccessDashboard) {
+      setTeams([]);
+      setCategories([]);
+      setPanels([]);
+      setChannels([]);
+      setRoles([]);
+      setSettings({});
+      setTranscripts([]);
+      return;
+    }
+
+    if (currentUser.canManage) {
+      const [teamData, categoryData, panelData, channelData, roleData, settingsData, transcriptData] = await Promise.all([
+        apiFetch("/teams"),
+        apiFetch("/categories"),
+        apiFetch("/panels"),
+        apiFetch("/discord/channels"),
+        apiFetch("/discord/roles"),
+        apiFetch("/settings"),
+        apiFetch("/transcripts")
+      ]);
+      setTeams(teamData.teams || []);
+      setCategories(categoryData.categories || []);
+      setPanels(panelData.panels || []);
+      setChannels(channelData.channels || []);
+      setRoles(roleData.roles || []);
+      const loadedSettings = settingsData.settings || {};
+      setSettings(loadedSettings);
+      setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
+      setTranscripts(transcriptData.transcripts || []);
+      return;
+    }
+
+    const transcriptData = await apiFetch("/transcripts");
+    setTeams([]);
+    setCategories([]);
+    setPanels([]);
+    setChannels([]);
+    setRoles([]);
+    setSettings({});
+    setTranscriptChannelId("");
+    setActiveTab("transcripts");
     setTranscripts(transcriptData.transcripts || []);
   };
 
@@ -526,28 +546,6 @@ export const App = () => {
     }
   };
 
-  const saveMediaForumSettings = async () => {
-    setBusy(true);
-    try {
-      const response = await apiFetch("/settings", {
-        method: "PUT",
-        body: JSON.stringify({
-          mediaForumChannelId: mediaForumChannelDraft || null
-        })
-      });
-      setSettings(response.settings || {});
-      const nextValue = (response.settings?.mediaForumChannelId as string) || "";
-      setMediaForumChannelId(nextValue);
-      setMediaForumChannelDraft(nextValue);
-      setMediaForumModalOpen(false);
-      alert("Media forum channel saved.");
-    } catch (error) {
-      notifyErrorOnce(getErrorMessage(error, "Unable to save media forum channel"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!user) {
     return (
       <div className="page">
@@ -558,6 +556,29 @@ export const App = () => {
           <a className="button" href={`${import.meta.env.VITE_API_BASE}/auth/login`}>
             Log in with Discord
           </a>
+        </div>
+        <footer className="brand-footer">{brandingFooter}</footer>
+      </div>
+    );
+  }
+
+  if (user && user.canAccessDashboard === false) {
+    return (
+      <div className="page">
+        {themeToggle}
+        <div className="card login-card">
+          <h1>{appName}</h1>
+          <p>Your account does not have dashboard access for this guild.</p>
+          <button
+            className="button secondary"
+            onClick={() =>
+              apiFetch("/auth/logout", { method: "POST" }).then(() => {
+                window.location.reload();
+              })
+            }
+          >
+            Log out
+          </button>
         </div>
         <footer className="brand-footer">{brandingFooter}</footer>
       </div>
@@ -602,7 +623,7 @@ export const App = () => {
       <header className="hero">
         <div>
           <h1>{appName}</h1>
-          <p>Manage teams, categories, and ticket panels from one clean workspace.</p>
+          <p>{user.canManage ? "Manage teams, categories, and ticket panels from one clean workspace." : "View ticket transcripts."}</p>
         </div>
         <button
           className="button secondary"
@@ -617,13 +638,17 @@ export const App = () => {
       </header>
 
       <div className="tabs">
-        <button className={`tab ${activeTab === "teams" ? "active" : ""}`} onClick={() => { setActiveTab("teams"); window.location.hash = "#/"; }}>Teams ({teams.length})</button>
-        <button className={`tab ${activeTab === "categories" ? "active" : ""}`} onClick={() => { setActiveTab("categories"); window.location.hash = "#/"; }}>Categories ({categories.length})</button>
-        <button className={`tab ${activeTab === "panels" ? "active" : ""}`} onClick={() => { setActiveTab("panels"); window.location.hash = "#/"; }}>Panels ({panels.length})</button>
+        {user.canManage && (
+          <>
+            <button className={`tab ${activeTab === "teams" ? "active" : ""}`} onClick={() => { setActiveTab("teams"); window.location.hash = "#/"; }}>Teams ({teams.length})</button>
+            <button className={`tab ${activeTab === "categories" ? "active" : ""}`} onClick={() => { setActiveTab("categories"); window.location.hash = "#/"; }}>Categories ({categories.length})</button>
+            <button className={`tab ${activeTab === "panels" ? "active" : ""}`} onClick={() => { setActiveTab("panels"); window.location.hash = "#/"; }}>Panels ({panels.length})</button>
+          </>
+        )}
         <button className={`tab ${activeTab === "transcripts" ? "active" : ""}`} onClick={() => { setActiveTab("transcripts"); window.location.hash = "#/transcripts"; }}>Transcripts ({transcripts.length})</button>
       </div>
 
-      {activeTab === "teams" && (
+      {user.canManage && activeTab === "teams" && (
         <section className="grid">
           <div className="card">
             <h2>{editingTeamId ? "Edit Team" : "Create Team"}</h2>
@@ -695,7 +720,7 @@ export const App = () => {
         </section>
       )}
 
-      {activeTab === "categories" && (
+      {user.canManage && activeTab === "categories" && (
         <section className="grid">
           <div className="card">
             <h2>{editingCategoryId ? "Edit Category" : "Create Category"}</h2>
@@ -769,7 +794,7 @@ export const App = () => {
         </section>
       )}
 
-      {activeTab === "panels" && (
+      {user.canManage && activeTab === "panels" && (
         <section className="grid">
           <div className="card">
             <h2>{editingPanelId ? "Edit Panel" : "Create Panel"}</h2>
@@ -896,16 +921,6 @@ export const App = () => {
               <button
                 className="button danger"
                 disabled={busy}
-                onClick={() => {
-                  setMediaForumChannelDraft(mediaForumChannelId);
-                  setMediaForumModalOpen(true);
-                }}
-              >
-                Change Media Backup Channel
-              </button>
-              <button
-                className="button danger"
-                disabled={busy}
                 onClick={async () => {
                   if (!window.confirm("Force close ALL open tickets for this guild?")) {
                     return;
@@ -944,35 +959,6 @@ export const App = () => {
               >
                 Delete All Transcripts
               </button>
-              <span className="muted">
-                Active media backup channel: {settings.mediaForumChannelId ? `#${mediaBackupChannels.find((channel) => channel.id === settings.mediaForumChannelId)?.name || settings.mediaForumChannelId}` : "none"}
-              </span>
-            </div>
-          )}
-          {user?.isSuperuser && mediaForumModalOpen && (
-            <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Change media backup channel">
-              <div className="modal-window">
-                <h3>Change Media Backup Channel</h3>
-                <label>
-                  Backup Channel
-                  <select value={mediaForumChannelDraft} onChange={(e) => setMediaForumChannelDraft(e.target.value)}>
-                    <option value="">None</option>
-                    {mediaBackupChannels.map((channel) => (
-                      <option key={channel.id} value={channel.id}>
-                        {channel.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="actions">
-                  <button className="button" onClick={saveMediaForumSettings} disabled={busy}>
-                    Save
-                  </button>
-                  <button className="button secondary" onClick={() => setMediaForumModalOpen(false)} disabled={busy}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
             </div>
           )}
           {transcripts.length === 0 ? (
