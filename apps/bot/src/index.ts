@@ -2178,25 +2178,25 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
-    const ticket = await getTicketByChannel(interaction.channelId);
-    if (!ticket) {
-      await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    await interaction.deferReply();
-    const member = await interaction.guild?.members.fetch(interaction.user.id);
-    const roleIds = member?.roles.cache.map((role) => role.id) || [];
-    const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-    if (!canManage) {
-      await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
-      return;
-    }
-    const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
-    if (!channel || channel.type !== ChannelType.GuildText) {
-      await interaction.editReply({ content: "Ticket channel not found." });
-      return;
-    }
     try {
+      await interaction.deferReply();
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.editReply({ content: "Use this in a ticket channel." });
+        return;
+      }
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildText) {
+        await interaction.editReply({ content: "Ticket channel not found." });
+        return;
+      }
       const customNameRaw = interaction.options.getString("name")?.trim() || "";
       const customName = customNameRaw
         .toLowerCase()
@@ -2226,13 +2226,20 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
     } catch (error) {
       console.warn("[command] rename failed", {
-        ticketId: ticket.id,
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         userId: interaction.user.id,
         error
       });
-      await interaction.editReply({ content: "Unable to rename this ticket right now." });
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: "Unable to rename this ticket right now." });
+        } else {
+          await interaction.reply({ content: "Unable to rename this ticket right now.", flags: MessageFlags.Ephemeral });
+        }
+      } catch {
+        // no-op: avoid crashing interaction handler if response window already closed
+      }
     }
     return;
   }
