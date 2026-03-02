@@ -228,6 +228,9 @@ const HARDCODED_MEDIA_BACKUP_CHANNEL_ID = "1477791851242193051";
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
 const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; channelId: string }>();
+const renameInFlightByChannel = new Map<string, Promise<void>>();
+const lastRenameAtByChannel = new Map<string, number>();
+const RENAME_MIN_INTERVAL_MS = Number(process.env.RENAME_MIN_INTERVAL_MS || 10000);
 
 type MediaPostLinkData = {
   threadId: string;
@@ -2318,6 +2321,21 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: "Ticket channel not found." });
         return;
       }
+
+      if (renameInFlightByChannel.has(channel.id)) {
+        await interaction.editReply({ content: "A rename is already being processed for this ticket. Please wait a few seconds and try again." });
+        return;
+      }
+
+      const now = Date.now();
+      const lastRenameAt = lastRenameAtByChannel.get(channel.id) || 0;
+      if (now - lastRenameAt < RENAME_MIN_INTERVAL_MS) {
+        const waitSeconds = Math.ceil((RENAME_MIN_INTERVAL_MS - (now - lastRenameAt)) / 1000);
+        await interaction.editReply({ content: `Please wait ${waitSeconds}s before renaming this ticket again.` });
+        return;
+      }
+      lastRenameAtByChannel.set(channel.id, now);
+
       const customNameRaw = interaction.options.getString("name")?.trim() || "";
       const customName = customNameRaw
         .toLowerCase()
@@ -2346,7 +2364,7 @@ client.on("interactionCreate", async (interaction) => {
           error
         });
 
-        void renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
+        const backgroundPromise = renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
           .then(() => {
             console.info("[command] rename background success", {
               ticketId: ticket.id,
@@ -2376,7 +2394,15 @@ client.on("interactionCreate", async (interaction) => {
               message: backgroundError instanceof Error ? backgroundError.message : "unknown_error",
               error: backgroundError
             });
+          })
+          .finally(() => {
+            const active = renameInFlightByChannel.get(channel.id);
+            if (active === backgroundPromise) {
+              renameInFlightByChannel.delete(channel.id);
+            }
           });
+
+        renameInFlightByChannel.set(channel.id, backgroundPromise);
       }
 
       await withTimeout(
