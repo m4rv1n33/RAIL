@@ -2227,7 +2227,11 @@ client.on("interactionCreate", async (interaction) => {
       const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
       let roleIds = getInteractionRoleIds(interaction);
       if (!requesterIsSuperuser && roleIds.length === 0) {
-        const member = await (interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null));
+        const member = await withTimeout(
+          interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
+          10000,
+          "rename_member_fetch_timeout"
+        );
         roleIds = member?.roles.cache.map((role) => role.id) || [];
       }
       const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
@@ -2248,8 +2252,12 @@ client.on("interactionCreate", async (interaction) => {
         .replace(/^-|-$/g, "");
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
-      await channel.setName(nextName);
-      await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
+      await withTimeout(channel.setName(nextName), 20000, "rename_channel_setname_timeout");
+      await withTimeout(
+        prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
+        10000,
+        "rename_ticket_update_timeout"
+      );
       await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
 
       void withTimeout(
@@ -2273,6 +2281,16 @@ client.on("interactionCreate", async (interaction) => {
         });
       });
     } catch (error) {
+      let message = "Unable to rename this ticket right now.";
+      if (error instanceof Error) {
+        if (error.message === "rename_member_fetch_timeout") {
+          message = "Rename timed out while checking member permissions. Please try again.";
+        } else if (error.message === "rename_channel_setname_timeout") {
+          message = "Rename timed out while updating the channel name. Please try again.";
+        } else if (error.message === "rename_ticket_update_timeout") {
+          message = "Rename timed out while writing ticket metadata. The channel may already be renamed.";
+        }
+      }
       console.warn("[command] rename failed", {
         guildId: interaction.guildId,
         channelId: interaction.channelId,
@@ -2282,9 +2300,9 @@ client.on("interactionCreate", async (interaction) => {
       });
       try {
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: "Unable to rename this ticket right now." });
+          await interaction.editReply({ content: message });
         } else {
-          await interaction.reply({ content: "Unable to rename this ticket right now.", flags: MessageFlags.Ephemeral });
+          await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
         }
       } catch {
         // no-op: avoid crashing interaction handler if response window already closed
