@@ -243,6 +243,24 @@ const isPrismaPoolTimeout = (error: unknown) => {
   return candidate.code === "P2024";
 };
 
+const withTimeout = async <T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(label));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
 const getTeamsForAutocomplete = async (guildId: string) => {
   const now = Date.now();
   const cached = teamAutocompleteCache.get(guildId);
@@ -1852,7 +1870,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `<@${interaction.user.id}> this ticket must be claimed before switching category.` });
         return;
       }
-      if (ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+      if (ticket.claimedById && ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
         auditSuperuserBypass({
           action: "ticket.switchcategory",
           userId: interaction.user.id,
@@ -2180,19 +2198,31 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
     try {
       await interaction.deferReply();
-      const ticket = await getTicketByChannel(interaction.channelId);
+      const ticket = await withTimeout(getTicketByChannel(interaction.channelId), 6000, "rename_ticket_lookup_timeout");
       if (!ticket) {
         await interaction.editReply({ content: "Use this in a ticket channel." });
         return;
       }
-      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const member = await withTimeout(
+        interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
+        6000,
+        "rename_member_fetch_timeout"
+      );
       const roleIds = member?.roles.cache.map((role) => role.id) || [];
-      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      const canManage = await withTimeout(
+        canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket),
+        6000,
+        "rename_permission_check_timeout"
+      );
       if (!canManage) {
         await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
         return;
       }
-      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      const channel = await withTimeout(
+        client.channels.fetch(ticket.channelId).catch(() => null),
+        6000,
+        "rename_channel_fetch_timeout"
+      );
       if (!channel || channel.type !== ChannelType.GuildText) {
         await interaction.editReply({ content: "Ticket channel not found." });
         return;
@@ -2205,9 +2235,15 @@ client.on("interactionCreate", async (interaction) => {
         .replace(/^-|-$/g, "");
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
-      await channel.setName(nextName);
-      await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
-      await syncTicketMediaPostTitle(ticket, nextName).catch((error) => {
+      await withTimeout(channel.setName(nextName), 8000, "rename_channel_update_timeout");
+      await withTimeout(
+        prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
+        6000,
+        "rename_ticket_update_timeout"
+      );
+      await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
+
+      void withTimeout(syncTicketMediaPostTitle(ticket, nextName), 6000, "rename_media_title_sync_timeout").catch((error) => {
         console.warn("[media-post] Failed to sync media post title", {
           ticketId: ticket.id,
           channelId: interaction.channelId,
@@ -2215,15 +2251,27 @@ client.on("interactionCreate", async (interaction) => {
           error
         });
       });
-      await prisma.ticketEvent.create({
-        data: {
+
+      void withTimeout(
+        prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "RENAME",
+            actorId: interaction.user.id,
+            data: { name: nextName }
+          }
+        }),
+        6000,
+        "rename_event_create_timeout"
+      ).catch((error) => {
+        console.warn("[command] rename event write failed", {
           ticketId: ticket.id,
-          type: "RENAME",
-          actorId: interaction.user.id,
-          data: { name: nextName }
-        }
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          userId: interaction.user.id,
+          error
+        });
       });
-      await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
     } catch (error) {
       console.warn("[command] rename failed", {
         guildId: interaction.guildId,
