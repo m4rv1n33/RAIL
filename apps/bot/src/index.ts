@@ -576,30 +576,6 @@ const forwardMediaToTicketPost = async (
   await enforceReadOnlyMediaPost(linkedThread);
 };
 
-const syncTicketMediaPostTitle = async (ticket: { id: string }, title: string) => {
-  const link = await getTicketMediaPostLink(ticket.id);
-  if (!link?.starterMessageId) {
-    return;
-  }
-
-  const parentChannel = await client.channels.fetch(link.forumChannelId).catch(() => null);
-  if (!parentChannel || parentChannel.type !== ChannelType.GuildText) {
-    return;
-  }
-
-  const starterMessage = await parentChannel.messages.fetch(link.starterMessageId).catch(() => null);
-  if (!starterMessage) {
-    return;
-  }
-
-  const normalized = title.trim().slice(0, 100);
-  if (!normalized) {
-    return;
-  }
-
-  await starterMessage.edit(`Media backup thread for ${normalized}`).catch(() => null);
-};
-
 const finalizeTicketMediaPost = async (ticket: {
   id: string;
   guildId: string;
@@ -2275,15 +2251,6 @@ client.on("interactionCreate", async (interaction) => {
       await channel.setName(nextName);
       await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
       await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
-
-      void withTimeout(syncTicketMediaPostTitle(ticket, nextName), 6000, "rename_media_title_sync_timeout").catch((error) => {
-        console.warn("[media-post] Failed to sync media post title", {
-          ticketId: ticket.id,
-          channelId: interaction.channelId,
-          nextName,
-          error
-        });
-      });
 
       void withTimeout(
         prisma.ticketEvent.create({
