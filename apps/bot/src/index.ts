@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import express from "express";
 import {
+  ActivityType,
   ActionRowBuilder,
   AttachmentBuilder,
   ButtonBuilder,
@@ -47,6 +48,36 @@ const client = new Client({
 
 client.on("error", (error) => {
   console.error("Discord client error:", error);
+});
+
+const updateBotPresence = () => {
+  if (!client.user) {
+    return;
+  }
+  const totalMembers = client.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0);
+  client.user.setActivity(`over ${totalMembers.toLocaleString()} members`, {
+    type: ActivityType.Watching
+  });
+};
+
+client.once("ready", () => {
+  updateBotPresence();
+});
+
+client.on("guildCreate", () => {
+  updateBotPresence();
+});
+
+client.on("guildDelete", () => {
+  updateBotPresence();
+});
+
+client.on("guildMemberAdd", () => {
+  updateBotPresence();
+});
+
+client.on("guildMemberRemove", () => {
+  updateBotPresence();
 });
 
 type ModalField = {
@@ -2332,6 +2363,9 @@ const start = async () => {
   });
   await registerCommands();
   await client.login(process.env.DISCORD_BOT_TOKEN);
+  setInterval(() => {
+    updateBotPresence();
+  }, 1000 * 60 * 10);
   startInactivityMonitor();
 };
 
