@@ -2183,45 +2183,57 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
       return;
     }
+    await interaction.deferReply();
     const member = await interaction.guild?.members.fetch(interaction.user.id);
     const roleIds = member?.roles.cache.map((role) => role.id) || [];
     const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
     if (!canManage) {
-      await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+      await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
       return;
     }
     const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
     if (!channel || channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: "Ticket channel not found." });
+      await interaction.editReply({ content: "Ticket channel not found." });
       return;
     }
-    const customNameRaw = interaction.options.getString("name")?.trim() || "";
-    const customName = customNameRaw
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    const baseName = getTicketDisplayLabel(ticket);
-    const nextName = customName || baseName;
-    await channel.setName(nextName);
-    await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
-    await syncTicketMediaPostTitle(ticket, nextName).catch((error) => {
-      console.warn("[media-post] Failed to sync media post title", {
+    try {
+      const customNameRaw = interaction.options.getString("name")?.trim() || "";
+      const customName = customNameRaw
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      const baseName = getTicketDisplayLabel(ticket);
+      const nextName = customName || baseName;
+      await channel.setName(nextName);
+      await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
+      await syncTicketMediaPostTitle(ticket, nextName).catch((error) => {
+        console.warn("[media-post] Failed to sync media post title", {
+          ticketId: ticket.id,
+          channelId: interaction.channelId,
+          nextName,
+          error
+        });
+      });
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "RENAME",
+          actorId: interaction.user.id,
+          data: { name: nextName }
+        }
+      });
+      await interaction.editReply({ content: `Ticket renamed to **${nextName}**.` });
+    } catch (error) {
+      console.warn("[command] rename failed", {
         ticketId: ticket.id,
+        guildId: interaction.guildId,
         channelId: interaction.channelId,
-        nextName,
+        userId: interaction.user.id,
         error
       });
-    });
-    await prisma.ticketEvent.create({
-      data: {
-        ticketId: ticket.id,
-        type: "RENAME",
-        actorId: interaction.user.id,
-        data: { name: nextName }
-      }
-    });
-    await interaction.reply({ content: `Ticket renamed to **${nextName}**.` });
+      await interaction.editReply({ content: "Unable to rename this ticket right now." });
+    }
     return;
   }
 });
