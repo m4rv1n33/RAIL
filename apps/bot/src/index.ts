@@ -1044,6 +1044,36 @@ const userHasTeamRole = (roleIds: string[], ticket: Awaited<ReturnType<typeof ge
   return roleIds.some((roleId) => teamRoles.includes(roleId));
 };
 
+const getInteractionRoleIds = (interaction: ChatInputCommandInteraction): string[] => {
+  const member = interaction.member;
+  if (!member || typeof member !== "object" || !("roles" in member)) {
+    return [];
+  }
+
+  const rolesValue = member.roles as unknown;
+  if (Array.isArray(rolesValue)) {
+    return rolesValue.filter((value): value is string => typeof value === "string");
+  }
+
+  if (
+    rolesValue &&
+    typeof rolesValue === "object" &&
+    "cache" in rolesValue
+  ) {
+    const cacheValue = (rolesValue as { cache?: unknown }).cache;
+    if (
+      cacheValue &&
+      typeof cacheValue === "object" &&
+      "map" in cacheValue &&
+      typeof (cacheValue as { map?: unknown }).map === "function"
+    ) {
+      return (cacheValue as { map: <T>(fn: (value: { id: string }) => T) => T[] }).map((role) => role.id);
+    }
+  }
+
+  return [];
+};
+
 const userHasSupportRole = async (guildId: string, roleIds: string[]) => {
   const teamRoles = await prisma.supportTeamRole.findMany({
     where: { team: { guildId } }
@@ -2203,12 +2233,16 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: "Use this in a ticket channel." });
         return;
       }
-      const member = await withTimeout(
-        interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
-        6000,
-        "rename_member_fetch_timeout"
-      );
-      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      let roleIds = getInteractionRoleIds(interaction);
+      if (!requesterIsSuperuser && roleIds.length === 0) {
+        const member = await withTimeout(
+          interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
+          6000,
+          "rename_member_fetch_timeout"
+        );
+        roleIds = member?.roles.cache.map((role) => role.id) || [];
+      }
       const canManage = await withTimeout(
         canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket),
         6000,
