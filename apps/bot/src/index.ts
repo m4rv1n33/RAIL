@@ -263,6 +263,14 @@ const withTimeout = async <T>(operation: Promise<T>, timeoutMs: number, label: s
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const isDiscordApiErrorCode = (error: unknown, code: number) => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown };
+  return candidate.code === code;
+};
+
 const renameTextChannelWithRetry = async (
   channel: import("discord.js").TextChannel,
   nextName: string,
@@ -285,6 +293,12 @@ const renameTextChannelWithRetry = async (
       );
       return;
     } catch (error) {
+      if (isDiscordApiErrorCode(error, 10003)) {
+        throw new Error("rename_channel_unknown");
+      }
+      if (isDiscordApiErrorCode(error, 50001)) {
+        throw new Error("rename_channel_missing_access");
+      }
       lastError = error;
 
       const refreshed = await withTimeout(
@@ -1637,14 +1651,29 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         components
       });
     }
-    await channel.permissionOverwrites.edit(ticket.ownerId, {
-      SendMessages: false
-    });
-    ticket.supportTeam.roles.forEach((role) => {
-      channel.permissionOverwrites.edit(role.roleId, {
+    try {
+      await channel.permissionOverwrites.edit(ticket.ownerId, {
         SendMessages: false
       });
-    });
+    } catch (error) {
+      if (!isDiscordApiErrorCode(error, 10003)) {
+        throw error;
+      }
+      return;
+    }
+
+    await Promise.allSettled(
+      ticket.supportTeam.roles.map((role) =>
+        channel.permissionOverwrites.edit(role.roleId, {
+          SendMessages: false
+        }).catch((error) => {
+          if (!isDiscordApiErrorCode(error, 10003)) {
+            throw error;
+          }
+        })
+      )
+    );
+
     await channel.delete("Ticket closed").catch(() => null);
   }
 };
@@ -2328,6 +2357,16 @@ client.on("interactionCreate", async (interaction) => {
             });
           })
           .catch((backgroundError) => {
+            if (backgroundError instanceof Error && backgroundError.message === "rename_channel_unknown") {
+              console.info("[command] rename background stopped: channel no longer exists", {
+                ticketId: ticket.id,
+                guildId: interaction.guildId,
+                channelId: interaction.channelId,
+                userId: interaction.user.id,
+                nextName
+              });
+              return;
+            }
             console.warn("[command] rename background failed", {
               ticketId: ticket.id,
               guildId: interaction.guildId,
@@ -2376,6 +2415,10 @@ client.on("interactionCreate", async (interaction) => {
       if (error instanceof Error) {
         if (error.message === "rename_member_fetch_timeout") {
           message = "Rename timed out while checking member permissions. Please try again.";
+        } else if (error.message === "rename_channel_unknown") {
+          message = "Rename failed because this ticket channel no longer exists.";
+        } else if (error.message === "rename_channel_missing_access") {
+          message = "Rename failed because the bot no longer has access to this ticket channel.";
         } else if (error.message.startsWith("rename_channel_setname_timeout_attempt_")) {
           message = "Rename timed out while updating the channel name. Please try again.";
         } else if (error.message === "rename_channel_quick_attempt_timeout") {
