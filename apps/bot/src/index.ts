@@ -261,6 +261,51 @@ const withTimeout = async <T>(operation: Promise<T>, timeoutMs: number, label: s
   }
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const renameTextChannelWithRetry = async (
+  channel: import("discord.js").TextChannel,
+  nextName: string,
+  options?: { maxAttempts?: number; perAttemptTimeoutMs?: number }
+) => {
+  if (channel.name === nextName) {
+    return;
+  }
+
+  const maxAttempts = options?.maxAttempts ?? 3;
+  const perAttemptTimeoutMs = options?.perAttemptTimeoutMs ?? 20000;
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await withTimeout(
+        channel.setName(nextName),
+        perAttemptTimeoutMs,
+        `rename_channel_setname_timeout_attempt_${attempt}`
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+
+      const refreshed = await withTimeout(
+        channel.client.channels.fetch(channel.id).catch(() => null),
+        10000,
+        `rename_channel_refetch_timeout_attempt_${attempt}`
+      );
+      if (refreshed && refreshed.type === ChannelType.GuildText && refreshed.name === nextName) {
+        return;
+      }
+
+      if (attempt < maxAttempts) {
+        await sleep(1200 * attempt);
+        continue;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("rename_channel_setname_failed");
+};
+
 const getTeamsForAutocomplete = async (guildId: string) => {
   const now = Date.now();
   const cached = teamAutocompleteCache.get(guildId);
@@ -2252,7 +2297,7 @@ client.on("interactionCreate", async (interaction) => {
         .replace(/^-|-$/g, "");
       const baseName = getTicketDisplayLabel(ticket);
       const nextName = customName || baseName;
-      await withTimeout(channel.setName(nextName), 20000, "rename_channel_setname_timeout");
+      await renameTextChannelWithRetry(channel, nextName);
       await withTimeout(
         prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
         10000,
@@ -2285,10 +2330,14 @@ client.on("interactionCreate", async (interaction) => {
       if (error instanceof Error) {
         if (error.message === "rename_member_fetch_timeout") {
           message = "Rename timed out while checking member permissions. Please try again.";
-        } else if (error.message === "rename_channel_setname_timeout") {
+        } else if (error.message.startsWith("rename_channel_setname_timeout_attempt_")) {
           message = "Rename timed out while updating the channel name. Please try again.";
+        } else if (error.message.startsWith("rename_channel_refetch_timeout_attempt_")) {
+          message = "Rename timed out while verifying channel state. Please try again.";
         } else if (error.message === "rename_ticket_update_timeout") {
           message = "Rename timed out while writing ticket metadata. The channel may already be renamed.";
+        } else if (error.message.includes("Missing Permissions")) {
+          message = "Rename failed due to missing permissions for the bot in this channel.";
         }
       }
       console.warn("[command] rename failed", {
