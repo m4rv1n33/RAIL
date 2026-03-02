@@ -2366,24 +2366,15 @@ client.on("interactionCreate", async (interaction) => {
       const nextName = customName || baseName;
 
       let renameDeferredInBackground = false;
-      try {
-        await withTimeout(
-          enqueueChannelMutation(channel.id, () =>
-            renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 3000 })
-          ),
-          3000,
-          "rename_channel_quick_attempt_timeout"
-        );
-      } catch (error) {
+      const queueBackgroundRename = (reason: string) => {
         renameDeferredInBackground = true;
-        console.warn("[command] rename quick attempt deferred to background", {
+        console.info("[command] rename deferred to background", {
           ticketId: ticket.id,
           guildId: interaction.guildId,
           channelId: interaction.channelId,
           userId: interaction.user.id,
           nextName,
-          message: error instanceof Error ? error.message : "unknown_error",
-          error
+          reason
         });
 
         const backgroundPromise = enqueueChannelMutation(channel.id, () =>
@@ -2427,6 +2418,37 @@ client.on("interactionCreate", async (interaction) => {
           });
 
         renameInFlightByChannel.set(channel.id, backgroundPromise);
+      };
+
+      if (channelMutationQueue.has(channel.id)) {
+        queueBackgroundRename("channel_mutation_queue_busy");
+      } else {
+        try {
+          await withTimeout(
+            enqueueChannelMutation(channel.id, () =>
+              renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 7000 })
+            ),
+            9000,
+            "rename_channel_quick_attempt_timeout"
+          );
+        } catch (error) {
+          if (error instanceof Error) {
+            if (error.message === "rename_channel_unknown" || error.message === "rename_channel_missing_access") {
+              throw error;
+            }
+            if (
+              error.message.startsWith("rename_channel_refetch_timeout_attempt_") ||
+              error.message === "rename_channel_quick_attempt_timeout" ||
+              error.message.startsWith("rename_channel_setname_timeout_attempt_")
+            ) {
+              queueBackgroundRename(error.message);
+            } else {
+              throw error;
+            }
+          } else {
+            queueBackgroundRename("rename_quick_attempt_unknown_error");
+          }
+        }
       }
 
       await withTimeout(
