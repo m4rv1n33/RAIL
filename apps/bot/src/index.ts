@@ -1343,7 +1343,7 @@ const buildTranscriptHtml = (
       html, body {
         margin: 0;
         min-height: 100%;
-        background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+        background: transparent;
         color: #e2e8f0;
       }
       body { padding: 24px; }
@@ -1364,7 +1364,6 @@ const buildTranscriptHtml = (
       }
       .meta { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
       .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
-      .brand { margin-top: 14px; font-size: 12px; color: #94a3b8; }
       .link { color: #93c5fd; text-decoration: underline; }
       .attachment { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
       .attachment img {
@@ -1382,13 +1381,12 @@ const buildTranscriptHtml = (
           color: #0f172a;
         }
         html, body {
-          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          background: transparent;
           color: #0f172a;
         }
         .card { background: #ffffff; border-color: #dbe4ef; }
         .msg { background: #f8fafc; border-color: #e2e8f0; }
         .meta { color: #475569; }
-        .brand { color: #64748b; }
         .link { color: #1d4ed8; }
         .attachment img { border-color: #dbe4ef; background: #ffffff; }
       }
@@ -1399,7 +1397,6 @@ const buildTranscriptHtml = (
       <section class="card">
         <h1>${escapeHtml(APP_NAME)} • Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
         ${rows || "<p>No messages captured.</p>"}
-        <div class="brand">${escapeHtml(BRAND_FOOTER)}</div>
       </section>
     </main>
   </body>
