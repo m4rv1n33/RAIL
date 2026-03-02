@@ -1,7 +1,6 @@
 import { config } from "dotenv";
 import express from "express";
 import {
-  ActivityType,
   ActionRowBuilder,
   AttachmentBuilder,
   ButtonBuilder,
@@ -55,9 +54,7 @@ const updateBotPresence = () => {
     return;
   }
   const totalMembers = client.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0);
-  client.user.setActivity(`over ${totalMembers.toLocaleString()} members`, {
-    type: ActivityType.Watching
-  });
+  client.user.setActivity(`Watching over ${totalMembers.toLocaleString()} members`);
 };
 
 client.once("ready", () => {
