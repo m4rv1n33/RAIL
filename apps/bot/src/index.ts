@@ -230,6 +230,7 @@ const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: Autoco
 const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; channelId: string }>();
 const renameInFlightByChannel = new Map<string, Promise<void>>();
 const lastRenameAtByChannel = new Map<string, number>();
+const channelMutationQueue = new Map<string, Promise<unknown>>();
 const RENAME_MIN_INTERVAL_MS = Number(process.env.RENAME_MIN_INTERVAL_MS || 10000);
 
 type MediaPostLinkData = {
@@ -260,6 +261,23 @@ const withTimeout = async <T>(operation: Promise<T>, timeoutMs: number, label: s
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
+    }
+  }
+};
+
+const enqueueChannelMutation = async <T>(channelId: string, task: () => Promise<T>): Promise<T> => {
+  const previous = channelMutationQueue.get(channelId) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(task);
+
+  channelMutationQueue.set(channelId, next);
+
+  try {
+    return await next;
+  } finally {
+    if (channelMutationQueue.get(channelId) === next) {
+      channelMutationQueue.delete(channelId);
     }
   }
 };
@@ -1256,9 +1274,11 @@ const switchTicketToTeam = async (
 
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
   if (channel && channel.type === ChannelType.GuildText) {
-    const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
-    await channel.permissionOverwrites.set(overwrites);
-    await channel.setParent(category.parentChannelId || null).catch(() => null);
+    await enqueueChannelMutation(channel.id, async () => {
+      const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
+      await channel.permissionOverwrites.set(overwrites);
+      await channel.setParent(category.parentChannelId || null).catch(() => null);
+    });
     const switchedTeam = await prisma.supportTeam.findFirst({
       where: { id: teamId },
       include: { roles: true }
@@ -2348,8 +2368,10 @@ client.on("interactionCreate", async (interaction) => {
       let renameDeferredInBackground = false;
       try {
         await withTimeout(
-          renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 10000 }),
-          10000,
+          enqueueChannelMutation(channel.id, () =>
+            renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 3000 })
+          ),
+          3000,
           "rename_channel_quick_attempt_timeout"
         );
       } catch (error) {
@@ -2364,7 +2386,9 @@ client.on("interactionCreate", async (interaction) => {
           error
         });
 
-        const backgroundPromise = renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
+        const backgroundPromise = enqueueChannelMutation(channel.id, () =>
+          renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 })
+        )
           .then(() => {
             console.info("[command] rename background success", {
               ticketId: ticket.id,
