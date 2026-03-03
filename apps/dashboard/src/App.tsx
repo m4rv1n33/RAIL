@@ -131,6 +131,7 @@ export const App = () => {
   const [activeTab, setActiveTab] = useState<"teams" | "categories" | "panels" | "transcripts">("teams");
   const [busy, setBusy] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash || "");
+  const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
 
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
@@ -177,6 +178,7 @@ export const App = () => {
     const match = routeHash.match(/^#\/transcripts\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : null;
   }, [routeHash]);
+  const isTermsRoute = useMemo(() => routePath === "/terms" || routeHash === "#/terms", [routePath, routeHash]);
 
   const load = async () => {
     const me = await apiFetch("/auth/me");
@@ -231,6 +233,9 @@ export const App = () => {
   };
 
   useEffect(() => {
+    if (isTermsRoute) {
+      return;
+    }
     let cancelled = false;
     const run = async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -255,12 +260,22 @@ export const App = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isTermsRoute]);
 
   useEffect(() => {
-    const onHashChange = () => setRouteHash(window.location.hash || "");
+    const updateRoute = () => {
+      setRouteHash(window.location.hash || "");
+      setRoutePath(window.location.pathname || "/");
+    };
+    const onHashChange = () => updateRoute();
+    const onPopState = () => updateRoute();
+    updateRoute();
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
 
   useEffect(() => {
@@ -557,6 +572,50 @@ export const App = () => {
       setBusy(false);
     }
   };
+
+  const termsPage = (
+    <div className="page">
+      {themeToggle}
+      <header className="hero">
+        <div>
+          <h1>Terms and Conditions</h1>
+          <p>UKRRP Ticket System</p>
+        </div>
+        <a className="button secondary" href="/">
+          Back to Dashboard
+        </a>
+      </header>
+
+      <section className="card">
+        <h2>Acceptance of Terms</h2>
+        <p>By using the UKRRP Ticket System Discord bot, dashboard, or related services, you agree to these terms.</p>
+        <h2>Data Collected and Stored</h2>
+        <p>The system may collect and store the following data to operate ticketing features:</p>
+        <ul>
+          <li>Discord IDs, usernames, role IDs, guild IDs, and channel IDs</li>
+          <li>Ticket metadata such as owner, claimer, category, status, timestamps, and close reason</li>
+          <li>Ticket event history such as create, claim, transfer, rename, close, and inactivity events</li>
+          <li>Transcript content, message metadata, and attachment URLs</li>
+          <li>Media backup linkage such as thread IDs and starter message IDs</li>
+          <li>Dashboard session and authentication context</li>
+        </ul>
+        <h2>Logging</h2>
+        <p>Operational logs are collected for reliability and diagnostics. Logs include request metadata and may include IP addresses from request headers such as <strong>cf-connecting-ip</strong> and <strong>x-forwarded-for</strong>.</p>
+        <h2>Use of Data</h2>
+        <p>Data is used to provide ticket workflows, enforce permissions, generate transcripts, and maintain service health.</p>
+        <h2>Retention</h2>
+        <p>Data is retained as needed for operations and moderation workflows. Administrative tools may allow transcript cleanup where configured.</p>
+        <h2>Changes</h2>
+        <p>These terms may be updated. Continued use of the system indicates acceptance of updated terms.</p>
+      </section>
+
+      <footer className="brand-footer">{brandingFooter}</footer>
+    </div>
+  );
+
+  if (isTermsRoute) {
+    return termsPage;
+  }
 
   if (!user) {
     return (
