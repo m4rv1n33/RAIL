@@ -1432,7 +1432,26 @@ const switchTicketToTeam = async (
     await enqueueChannelMutation(channel.id, async () => {
       const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
       await channel.permissionOverwrites.set(overwrites);
-      await channel.setParent(category.parentChannelId || null).catch(() => null);
+      await channel.setParent(category.parentChannelId || null, { lockPermissions: false }).catch(() => null);
+      try {
+        await channel.permissionOverwrites.edit(ticket.ownerId, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true
+        });
+      } catch (error) {
+        console.warn("[ticket-switch] Failed to re-apply owner permissions", {
+          ticketId: ticket.id,
+          guildId: ticket.guildId,
+          channelId: channel.id,
+          ownerId: ticket.ownerId,
+          actorId,
+          toTeamId: teamId,
+          toCategoryId: category.id,
+          error
+        });
+        throw error;
+      }
     });
     const switchedTeam = await prisma.supportTeam.findFirst({
       where: { id: teamId },
