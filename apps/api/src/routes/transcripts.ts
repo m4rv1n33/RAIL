@@ -13,6 +13,39 @@ const formatTicketLabel = (ticketNumber: number | null | undefined, ticketId: st
   return `ticket-${ticketId.slice(0, 6)}`;
 };
 
+const getLatestRenameByTicketId = async (ticketIds: string[]) => {
+  if (ticketIds.length === 0) {
+    return new Map<string, string>();
+  }
+
+  const renameEvents = await prisma.ticketEvent.findMany({
+    where: {
+      ticketId: { in: ticketIds },
+      type: "RENAME"
+    },
+    select: {
+      ticketId: true,
+      data: true,
+      createdAt: true
+    },
+    orderBy: [{ ticketId: "asc" }, { createdAt: "desc" }]
+  });
+
+  const map = new Map<string, string>();
+  for (const event of renameEvents) {
+    if (map.has(event.ticketId)) {
+      continue;
+    }
+    const payload = event.data as { name?: unknown } | null;
+    const name = typeof payload?.name === "string" ? payload.name.trim() : "";
+    if (name) {
+      map.set(event.ticketId, name);
+    }
+  }
+
+  return map;
+};
+
 const resolveUsernames = async (ids: string[]) => {
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   const map = new Map<string, string>();
@@ -48,7 +81,7 @@ transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, r
     .filter((ticket) => ticket.transcript)
     .map((ticket) => ({
       ticketId: ticket.id,
-      ticketLabel: formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
+      generatedTicketLabel: formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
       openedById: ticket.ownerId,
       closedById: ticket.events[0]?.actorId || null,
       reason: ticket.closeReason || null,
@@ -57,6 +90,8 @@ transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, r
       hasTranscript: Boolean(ticket.transcript)
     }));
 
+  const latestRenameByTicketId = await getLatestRenameByTicketId(transcripts.map((entry) => entry.ticketId));
+
   const usernameMap = await resolveUsernames(
     transcripts.flatMap((entry) => [entry.openedById, entry.closedById || ""])
   );
@@ -64,6 +99,7 @@ transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, r
   res.json({
     transcripts: transcripts.map((entry) => ({
       ...entry,
+      ticketLabel: latestRenameByTicketId.get(entry.ticketId) || entry.generatedTicketLabel,
       openedByName: usernameMap.get(entry.openedById) || entry.openedById,
       closedByName: entry.closedById ? usernameMap.get(entry.closedById) || entry.closedById : null
     }))
@@ -90,12 +126,15 @@ transcriptsRouter.get("/:ticketId", requireSession, requireDashboardAccess, asyn
     return;
   }
 
+  const latestRenameByTicketId = await getLatestRenameByTicketId([ticket.id]);
   const usernameMap = await resolveUsernames([ticket.ownerId, ticket.events[0]?.actorId || ""]);
 
   res.json({
     transcript: {
       ticketId: ticket.id,
-      ticketLabel: formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
+      ticketLabel:
+        latestRenameByTicketId.get(ticket.id) ||
+        formatTicketLabel((ticket as { ticketNumber?: number }).ticketNumber, ticket.id),
       openedById: ticket.ownerId,
       openedByName: usernameMap.get(ticket.ownerId) || ticket.ownerId,
       closedById: ticket.events[0]?.actorId || null,

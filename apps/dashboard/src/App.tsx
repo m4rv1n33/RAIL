@@ -104,6 +104,18 @@ const renderDiscordEmojiText = (value?: string | null) => {
   return parts.length > 0 ? parts : value;
 };
 
+const formatTicketTitle = (ticketLabel?: string, ticketId?: string) => {
+  const fallbackLabel = ticketId ? `ticket-${ticketId.slice(0, 6)}` : "";
+  const normalized = (ticketLabel || fallbackLabel).trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.toLowerCase().startsWith("ticket ")) {
+    return normalized;
+  }
+  return `Ticket ${normalized}`;
+};
+
 export const App = () => {
   const appName = "UKRRP Ticket System";
   const brandingFooter = "Powered by RAIL, built by @m4rv1n_33";
@@ -587,12 +599,13 @@ export const App = () => {
 
   if (transcriptTicketId) {
     const looksLikeHtml = Boolean(activeTranscript?.content?.trim().startsWith("<"));
+    const transcriptTitle = formatTicketTitle(activeTranscript?.ticketLabel, transcriptTicketId);
     return (
       <div className="page">
         {themeToggle}
         <header className="hero">
           <div>
-            <h1>Transcript {activeTranscript?.ticketLabel || (transcriptTicketId ? `ticket-${transcriptTicketId.slice(0, 6)}` : "")}</h1>
+            <h1>Transcript {transcriptTitle}</h1>
             <p>Opened by <strong>{activeTranscript?.openedByName || activeTranscript?.openedById || "unknown"}</strong> • Closed by <strong>{activeTranscript?.closedByName || activeTranscript?.closedById || "unknown"}</strong></p>
           </div>
           <a className="button secondary" href="#/transcripts">
@@ -968,7 +981,7 @@ export const App = () => {
               {transcripts.map((entry) => (
                 <div key={entry.ticketId} className="item">
                   <div>
-                    <h3>{entry.ticketLabel || `ticket-${entry.ticketId.slice(0, 6)}`}</h3>
+                    <h3>{formatTicketTitle(entry.ticketLabel, entry.ticketId)}</h3>
                     <div className="meta">Opened by: {entry.openedByName || entry.openedById}</div>
                     <div className="meta">Closed by: {entry.closedByName || entry.closedById || "unknown"}</div>
                     <div className="meta">Reason: {entry.reason || "No reason provided"}</div>

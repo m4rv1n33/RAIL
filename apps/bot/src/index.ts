@@ -504,7 +504,7 @@ const createMediaBackupThread = async (
   }
 
   const threadName = await getTicketTitleForMediaPost(ticket);
-  const starterMessage = await backupChannel.send(`Media backup thread for ${getTicketDisplayLabel(ticket)}`);
+  const starterMessage = await backupChannel.send(`Media backup thread for Ticket ${threadName}`);
   const thread = await starterMessage.startThread({ name: threadName }).catch(() => null);
   if (!thread) {
     return null;
@@ -656,6 +656,30 @@ const syncTicketMediaPostTitle = async (ticketId: string, title: string) => {
     return;
   }
   await thread.setName(normalized).catch(() => null);
+};
+
+const syncTicketMediaPostStarterMessage = async (ticketId: string, title: string) => {
+  const normalized = title.trim();
+  if (!normalized) {
+    return;
+  }
+
+  const link = await getTicketMediaPostLink(ticketId);
+  if (!link?.starterMessageId) {
+    return;
+  }
+
+  const channel = await client.channels.fetch(link.forumChannelId).catch(() => null);
+  if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
+    return;
+  }
+
+  const starterMessage = await channel.messages.fetch(link.starterMessageId).catch(() => null);
+  if (!starterMessage) {
+    return;
+  }
+
+  await starterMessage.edit(`Media backup thread for ${buildTicketTitle(normalized)}`).catch(() => null);
 };
 
 const syncTicketControlEmbedTitle = async (
@@ -2511,7 +2535,8 @@ client.on("interactionCreate", async (interaction) => {
         await Promise.allSettled([
           persistRenameEvent(),
           syncTicketControlEmbedTitle(channel, ticket.id, nextName),
-          syncTicketMediaPostTitle(ticket.id, nextName)
+          syncTicketMediaPostTitle(ticket.id, nextName),
+          syncTicketMediaPostStarterMessage(ticket.id, nextName)
         ]);
       };
 
