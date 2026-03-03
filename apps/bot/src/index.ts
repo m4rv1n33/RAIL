@@ -1525,6 +1525,24 @@ const registerCommands = async () => {
           .setRequired(false)
       ),
     new SlashCommandBuilder()
+      .setName("add")
+      .setDescription("Add an account to the current ticket")
+      .addUserOption((option) =>
+        option
+          .setName("account")
+          .setDescription("Account to add")
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName("remove")
+      .setDescription("Remove an account from the current ticket")
+      .addUserOption((option) =>
+        option
+          .setName("account")
+          .setDescription("Account to remove")
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
       .setName("panel")
       .setDescription("Panel actions")
       .addSubcommand((sub) =>
@@ -2130,6 +2148,77 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
     }
+
+    if (["add", "remove"].includes(interaction.commandName)) {
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+
+      const target = interaction.options.getUser("account", true);
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildText) {
+        await interaction.reply({ content: "Ticket channel not found.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.commandName === "remove" && target.id === ticket.ownerId) {
+        await interaction.reply({ content: "You cannot remove the ticket creator from this ticket.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.commandName === "add") {
+        await channel.permissionOverwrites.edit(target.id, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "ADD_USER",
+            actorId: interaction.user.id,
+            data: { userId: target.id }
+          }
+        });
+        await prisma.ticket.update({
+          where: { id: ticket.id },
+          data: { lastActivityAt: new Date() }
+        });
+        await interaction.reply({ content: `<@${target.id}> has been added to the ticket.` });
+        return;
+      }
+
+      await channel.permissionOverwrites.edit(target.id, {
+        ViewChannel: false,
+        ReadMessageHistory: false,
+        SendMessages: false
+      });
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "REMOVE_USER",
+          actorId: interaction.user.id,
+          data: { userId: target.id }
+        }
+      });
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { lastActivityAt: new Date() }
+      });
+      await interaction.reply({ content: `<@${target.id}> has been removed from the ticket.` });
+      return;
+    }
+
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
