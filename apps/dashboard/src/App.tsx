@@ -629,6 +629,9 @@ export const App = () => {
           </a>
         </div>
         <footer className="brand-footer">{brandingFooter}</footer>
+        <a className="button secondary" href="/terms">
+          Terms and Conditions
+        </a>
       </div>
     );
   }
