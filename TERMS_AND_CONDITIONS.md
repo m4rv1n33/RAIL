@@ -1,4 +1,4 @@
-# UKRRP Ticket System — Terms and Conditions
+# RAIL Ticketing System - Terms and Conditions
 
 _Last updated: March 3, 2026_
 

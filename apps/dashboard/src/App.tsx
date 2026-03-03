@@ -579,7 +579,7 @@ export const App = () => {
       <header className="hero">
         <div>
           <h1>Terms and Conditions</h1>
-          <p>UKRRP Ticket System</p>
+          <p>RAIL Ticketing System</p>
         </div>
         <a className="button secondary" href="/">
           Back to Dashboard
@@ -628,10 +628,10 @@ export const App = () => {
             Log in with Discord
           </a>
         </div>
-        <footer className="brand-footer">{brandingFooter}</footer>
         <a className="button secondary" href="/terms">
           Terms and Conditions
         </a>
+        <footer className="brand-footer">{brandingFooter}</footer>
       </div>
     );
   }
