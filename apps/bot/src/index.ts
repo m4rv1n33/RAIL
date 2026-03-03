@@ -224,6 +224,7 @@ const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
 const ATTACHMENT_STORAGE_CACHE_TTL_MS = Number(process.env.ATTACHMENT_STORAGE_CACHE_TTL_MS || 30_000);
 const HARDCODED_MEDIA_BACKUP_CHANNEL_ID = "1477791851242193051";
+const TICKET_BLACKLIST_ROLE_ID = "1478457037607403610";
 
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
@@ -1132,12 +1133,28 @@ const applyClaimedPermissions = async (ticketId: string, claimedById: string) =>
   });
 };
 
+const userHasTicketBlacklistRole = async (guildId: string, userId: string) => {
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    return false;
+  }
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) {
+    return false;
+  }
+  return member.roles.cache.has(TICKET_BLACKLIST_ROLE_ID);
+};
+
 const createTicket = async (
   guildId: string,
   userId: string,
   category: { id: string; name: string; supportTeamId: string; parentChannelId: string | null },
   modalData?: Record<string, string>
 ) => {
+  if (await userHasTicketBlacklistRole(guildId, userId)) {
+    throw new Error("ticket_blacklisted_role");
+  }
+
   const { overwrites, team } = await buildPermissionOverwrites(guildId, userId, category.supportTeamId);
   const ticketId = randomUUID();
   const guild = await client.guilds.fetch(guildId);
@@ -1882,11 +1899,25 @@ client.on("interactionCreate", async (interaction) => {
       await sourceInteraction.showModal(buildTicketModal(categoryId, modalSchema));
       return;
     }
-    const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
-    await sourceInteraction.reply({
-      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
-      flags: MessageFlags.Ephemeral
-    });
+    try {
+      const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
+      await sourceInteraction.reply({
+        content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+        flags: MessageFlags.Ephemeral
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        await sourceInteraction.reply({
+          content: "You are not allowed to open tickets.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      await sourceInteraction.reply({
+        content: "Unable to create ticket right now.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
   };
 
   if (interaction.isChatInputCommand()) {
@@ -2238,11 +2269,25 @@ client.on("interactionCreate", async (interaction) => {
     for (const field of modalSchema.fields) {
       modalData[field.id] = interaction.fields.getTextInputValue(field.id);
     }
-    const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
-    await interaction.reply({
-      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
-      flags: MessageFlags.Ephemeral
-    });
+    try {
+      const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
+      await interaction.reply({
+        content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+        flags: MessageFlags.Ephemeral
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        await interaction.reply({
+          content: "You are not allowed to open tickets.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      await interaction.reply({
+        content: "Unable to create ticket.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
     return;
   }
 
@@ -2321,7 +2366,15 @@ client.on("interactionCreate", async (interaction) => {
         content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
         flags: MessageFlags.Ephemeral
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({ content: "You are not allowed to open tickets.", flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ content: "You are not allowed to open tickets.", flags: MessageFlags.Ephemeral });
+        }
+        return;
+      }
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: "Unable to create ticket.", flags: MessageFlags.Ephemeral });
       } else {
