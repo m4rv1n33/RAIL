@@ -424,6 +424,53 @@ textarea {
   font-size: 13px;
 }
 
+.terms-markdown {
+  line-height: 1.6;
+}
+
+.terms-markdown h1,
+.terms-markdown h2,
+.terms-markdown h3 {
+  margin: 0;
+}
+
+.terms-markdown h1 {
+  font-size: 24px;
+}
+
+.terms-markdown h2 {
+  font-size: 18px;
+  margin-top: 10px;
+}
+
+.terms-markdown h3 {
+  font-size: 15px;
+  margin-top: 8px;
+}
+
+.terms-markdown p,
+.terms-markdown ul {
+  margin: 0;
+  color: var(--text-subtle);
+}
+
+.terms-markdown ul {
+  padding-left: 20px;
+}
+
+.terms-markdown li {
+  margin: 3px 0;
+}
+
+.terms-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 1px 5px;
+  color: var(--text-main);
+}
+
 .emoji-inline {
   width: 1.2em;
   height: 1.2em;

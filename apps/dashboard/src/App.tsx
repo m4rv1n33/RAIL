@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { marked } from "marked";
 import { apiFetch } from "./api.js";
 
 type User = { id: string; isSuperuser?: boolean; canAccessDashboard?: boolean; canManage?: boolean };
@@ -132,6 +133,8 @@ export const App = () => {
   const [busy, setBusy] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash || "");
   const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
+  const [termsMarkdown, setTermsMarkdown] = useState("");
+  const [termsLoadError, setTermsLoadError] = useState("");
 
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
@@ -179,6 +182,12 @@ export const App = () => {
     return match ? decodeURIComponent(match[1]) : null;
   }, [routeHash]);
   const isTermsRoute = useMemo(() => routePath === "/terms" || routeHash === "#/terms", [routePath, routeHash]);
+  const termsHtml = useMemo(() => {
+    if (!termsMarkdown) {
+      return "";
+    }
+    return String(marked.parse(termsMarkdown));
+  }, [termsMarkdown]);
 
   const load = async () => {
     const me = await apiFetch("/auth/me");
@@ -283,6 +292,36 @@ export const App = () => {
       setActiveTab("transcripts");
     }
   }, [routeHash]);
+
+  useEffect(() => {
+    if (!isTermsRoute) {
+      return;
+    }
+
+    let cancelled = false;
+    fetch("/TERMS_AND_CONDITIONS.md", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Unable to load terms markdown.");
+        }
+        const content = await response.text();
+        if (cancelled) {
+          return;
+        }
+        setTermsMarkdown(content);
+        setTermsLoadError("");
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setTermsLoadError("Unable to load Terms and Conditions content.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isTermsRoute]);
 
   useEffect(() => {
     if (!user || !transcriptTicketId) {
@@ -586,28 +625,17 @@ export const App = () => {
         </a>
       </header>
 
-      <section className="card">
-        <h2>Acceptance of Terms</h2>
-        <p>By using the UKRRP Ticket System Discord bot, dashboard, or related services, you agree to these terms.</p>
-        <h2>Data Collected and Stored</h2>
-        <p>The system may collect and store the following data to operate ticketing features:</p>
-        <ul>
-          <li>Discord IDs, usernames, role IDs, guild IDs, and channel IDs</li>
-          <li>Ticket metadata such as owner, claimer, category, status, timestamps, and close reason</li>
-          <li>Ticket event history such as create, claim, transfer, rename, close, and inactivity events</li>
-          <li>Transcript content, message metadata, and attachment URLs</li>
-          <li>Media backup linkage such as thread IDs and starter message IDs</li>
-          <li>Dashboard session and authentication context</li>
-        </ul>
-        <h2>Logging</h2>
-        <p>Operational logs are collected for reliability and diagnostics. Logs include request metadata and may include IP addresses from request headers such as <strong>cf-connecting-ip</strong> and <strong>x-forwarded-for</strong>.</p>
-        <h2>Use of Data</h2>
-        <p>Data is used to provide ticket workflows, enforce permissions, generate transcripts, and maintain service health.</p>
-        <h2>Retention</h2>
-        <p>Data is retained as needed for operations and moderation workflows. Administrative tools may allow transcript cleanup where configured.</p>
-        <h2>Changes</h2>
-        <p>These terms may be updated. Continued use of the system indicates acceptance of updated terms.</p>
-      </section>
+      {termsLoadError ? (
+        <section className="card">
+          <p className="muted">{termsLoadError}</p>
+        </section>
+      ) : termsHtml ? (
+        <article className="card terms-markdown" dangerouslySetInnerHTML={{ __html: termsHtml }} />
+      ) : (
+        <section className="card">
+          <p className="muted">Loading terms...</p>
+        </section>
+      )}
 
       <footer className="brand-footer">{brandingFooter}</footer>
     </div>
