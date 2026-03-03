@@ -615,6 +615,120 @@ const getLinkedMediaThread = async (ticketId: string) => {
   return channel;
 };
 
+const getLatestRenamedTicketName = async (ticketId: string) => {
+  const event = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: "RENAME" },
+    orderBy: { createdAt: "desc" },
+    select: { data: true }
+  });
+  const payload = event?.data as { name?: unknown } | null;
+  if (!payload || typeof payload.name !== "string") {
+    return "";
+  }
+  return payload.name.trim();
+};
+
+const buildTicketTitle = (name: string) => `Ticket ${name}`;
+
+const resolveTicketName = async (
+  ticket: { id: string; channelId: string; ticketNumber?: number | null }
+) => {
+  const latestRename = await getLatestRenamedTicketName(ticket.id);
+  if (latestRename) {
+    return latestRename;
+  }
+
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (channel && channel.type === ChannelType.GuildText) {
+    return channel.name;
+  }
+
+  return getTicketDisplayLabel(ticket);
+};
+
+const syncTicketMediaPostTitle = async (ticketId: string, title: string) => {
+  const normalized = title.trim().slice(0, 100);
+  if (!normalized) {
+    return;
+  }
+  const thread = await getLinkedMediaThread(ticketId);
+  if (!thread) {
+    return;
+  }
+  await thread.setName(normalized).catch(() => null);
+};
+
+const syncTicketControlEmbedTitle = async (
+  channel: import("discord.js").TextChannel,
+  ticketId: string,
+  title: string
+) => {
+  const normalized = title.trim();
+  if (!normalized) {
+    return;
+  }
+
+  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!messages) {
+    return;
+  }
+
+  const target = messages
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .find((message) =>
+      message.author.id === client.user?.id &&
+      message.embeds.length > 0 &&
+      message.components.some((row) => {
+        const rowLike = row as { components?: Array<{ customId?: string }> };
+        const components = Array.isArray(rowLike.components) ? rowLike.components : [];
+        return components.some(
+          (component) =>
+            typeof component.customId === "string" &&
+            (component.customId === `ticket:claim:${ticketId}` || component.customId === `ticket:close:${ticketId}`)
+        );
+      })
+    );
+
+  if (!target) {
+    return;
+  }
+
+  const updatedEmbed = EmbedBuilder.from(target.embeds[0]);
+  updatedEmbed.setTitle(buildTicketTitle(normalized));
+  await target.edit({ embeds: [updatedEmbed] }).catch(() => null);
+};
+
+const notifyTicketOwnerClosed = async (params: {
+  ownerId: string;
+  ticketName: string;
+  closedById: string;
+  closedAt: Date;
+  reason?: string;
+}) => {
+  const owner = await client.users.fetch(params.ownerId).catch(() => null);
+  if (!owner) {
+    return;
+  }
+
+  const closedByValue =
+    params.closedById === "system"
+      ? "System"
+      : `<@${params.closedById}>`;
+
+  const embed = new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setTitle("Your ticket has been closed")
+    .addFields(
+      { name: "Ticket Name", value: buildTicketTitle(params.ticketName), inline: false },
+      { name: "Closed By", value: closedByValue, inline: true },
+      { name: "Closing Time", value: `<t:${Math.floor(params.closedAt.getTime() / 1000)}:F>`, inline: true },
+      { name: "Reason", value: params.reason || "No reason provided", inline: false }
+    )
+    .setFooter({ text: BRAND_FOOTER });
+
+  await owner.send({ embeds: [embed] }).catch(() => null);
+};
+
 const forwardMediaToTicketPost = async (
   ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
   message: import("discord.js").Message
@@ -1038,7 +1152,7 @@ const createTicket = async (
       .setStyle(ButtonStyle.Danger)
   );
   const embed = new EmbedBuilder()
-    .setTitle(ticketLabel)
+    .setTitle(buildTicketTitle(ticketLabel))
     .setDescription(
       "Please send your issue details so the team can help quickly.\n\nThis ticket auto-closes after 48 hours of inactivity and will be closed if there is no reply within the first 30 minutes."
     )
@@ -1608,7 +1722,17 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
   });
 
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
-  const ticketLabel = getTicketDisplayLabel(ticket);
+  const ticketName = await resolveTicketName(ticket);
+  const ticketLabel = buildTicketTitle(ticketName);
+
+  await notifyTicketOwnerClosed({
+    ownerId: ticket.ownerId,
+    ticketName,
+    closedById: actorId,
+    closedAt,
+    reason: normalizedReason
+  });
+
   if (channel && channel.type === ChannelType.GuildText) {
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     const transcriptLines: Array<{ timestamp: number; author: string; content: string }> = [];
@@ -2366,6 +2490,31 @@ client.on("interactionCreate", async (interaction) => {
       const remainingRenameWaitMs = Math.max(0, RENAME_MIN_INTERVAL_MS - (now - lastRenameAt));
 
       let renameDeferredInBackground = false;
+      let renameCompletedImmediately = false;
+
+      const persistRenameEvent = async () => {
+        await withTimeout(
+          prisma.ticketEvent.create({
+            data: {
+              ticketId: ticket.id,
+              type: "RENAME",
+              actorId: interaction.user.id,
+              data: { name: nextName }
+            }
+          }),
+          6000,
+          "rename_event_create_timeout"
+        );
+      };
+
+      const syncRenameSideEffects = async () => {
+        await Promise.allSettled([
+          persistRenameEvent(),
+          syncTicketControlEmbedTitle(channel, ticket.id, nextName),
+          syncTicketMediaPostTitle(ticket.id, nextName)
+        ]);
+      };
+
       const queueBackgroundRename = (reason: string, waitMs = 0) => {
         renameDeferredInBackground = true;
         console.info("[command] rename deferred to background", {
@@ -2392,6 +2541,17 @@ client.on("interactionCreate", async (interaction) => {
               channelId: interaction.channelId,
               userId: interaction.user.id,
               nextName
+            });
+
+            void syncRenameSideEffects().catch((error) => {
+              console.warn("[command] rename background side-effects failed", {
+                ticketId: ticket.id,
+                guildId: interaction.guildId,
+                channelId: interaction.channelId,
+                userId: interaction.user.id,
+                nextName,
+                error
+              });
             });
           })
           .catch((backgroundError) => {
@@ -2439,6 +2599,7 @@ client.on("interactionCreate", async (interaction) => {
             9000,
             "rename_channel_quick_attempt_timeout"
           );
+          renameCompletedImmediately = true;
         } catch (error) {
           if (error instanceof Error) {
             if (error.message === "rename_channel_unknown" || error.message === "rename_channel_missing_access") {
@@ -2470,26 +2631,18 @@ client.on("interactionCreate", async (interaction) => {
           : `Ticket renamed to **${nextName}**.`
       });
 
-      void withTimeout(
-        prisma.ticketEvent.create({
-          data: {
+      if (renameCompletedImmediately) {
+        void syncRenameSideEffects().catch((error) => {
+          console.warn("[command] rename side-effects failed", {
             ticketId: ticket.id,
-            type: "RENAME",
-            actorId: interaction.user.id,
-            data: { name: nextName }
-          }
-        }),
-        6000,
-        "rename_event_create_timeout"
-      ).catch((error) => {
-        console.warn("[command] rename event write failed", {
-          ticketId: ticket.id,
-          guildId: interaction.guildId,
-          channelId: interaction.channelId,
-          userId: interaction.user.id,
-          error
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            userId: interaction.user.id,
+            nextName,
+            error
+          });
         });
-      });
+      }
     } catch (error) {
       let message = "Unable to rename this ticket right now.";
       if (error instanceof Error) {
