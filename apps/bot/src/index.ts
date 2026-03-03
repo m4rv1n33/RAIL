@@ -231,7 +231,7 @@ const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; chann
 const renameInFlightByChannel = new Map<string, Promise<void>>();
 const lastRenameAtByChannel = new Map<string, number>();
 const channelMutationQueue = new Map<string, Promise<unknown>>();
-const RENAME_MIN_INTERVAL_MS = Number(process.env.RENAME_MIN_INTERVAL_MS || 10000);
+const RENAME_MIN_INTERVAL_MS = Number(process.env.RENAME_MIN_INTERVAL_MS || 600000);
 
 type MediaPostLinkData = {
   threadId: string;
