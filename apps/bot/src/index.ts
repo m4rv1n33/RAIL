@@ -73,8 +73,37 @@ client.on("guildMemberAdd", () => {
   updateBotPresence();
 });
 
-client.on("guildMemberRemove", () => {
+client.on("guildMemberRemove", async (member) => {
   updateBotPresence();
+
+  try {
+    const openTickets = await prisma.ticket.findMany({
+      where: {
+        guildId: member.guild.id,
+        ownerId: member.id,
+        status: { in: [TicketStatus.Open, TicketStatus.InProgress, TicketStatus.Waiting] }
+      },
+      select: { id: true }
+    });
+
+    for (const ticket of openTickets) {
+      await closeTicket(ticket.id, "system", "Ticket creator left the server");
+    }
+
+    if (openTickets.length > 0) {
+      console.info("[ticket-auto-close] Closed tickets for departed member", {
+        guildId: member.guild.id,
+        memberId: member.id,
+        closedCount: openTickets.length
+      });
+    }
+  } catch (error) {
+    console.warn("[ticket-auto-close] Failed to close tickets for departed member", {
+      guildId: member.guild.id,
+      memberId: member.id,
+      error
+    });
+  }
 });
 
 type ModalField = {
@@ -292,6 +321,9 @@ const isDiscordApiErrorCode = (error: unknown, code: number) => {
   const candidate = error as { code?: unknown };
   return candidate.code === code;
 };
+
+const isIgnorableOverwriteError = (error: unknown) =>
+  isDiscordApiErrorCode(error, 10003) || isDiscordApiErrorCode(error, 10009);
 
 const renameTextChannelWithRetry = async (
   channel: import("discord.js").TextChannel,
@@ -1881,10 +1913,12 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         SendMessages: false
       });
     } catch (error) {
-      if (!isDiscordApiErrorCode(error, 10003)) {
+      if (isDiscordApiErrorCode(error, 10003)) {
+        return;
+      }
+      if (!isDiscordApiErrorCode(error, 10009)) {
         throw error;
       }
-      return;
     }
 
     await Promise.allSettled(
@@ -1892,7 +1926,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         channel.permissionOverwrites.edit(role.roleId, {
           SendMessages: false
         }).catch((error) => {
-          if (!isDiscordApiErrorCode(error, 10003)) {
+          if (!isIgnorableOverwriteError(error)) {
             throw error;
           }
         })
