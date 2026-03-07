@@ -1612,6 +1612,9 @@ const registerCommands = async () => {
       .setName("unclaim")
       .setDescription("Unclaim the current ticket"),
     new SlashCommandBuilder()
+      .setName("forceunclaim")
+      .setDescription("Force unclaim the current ticket (superusers/admin only)"),
+    new SlashCommandBuilder()
       .setName("close")
       .setDescription("Close the current ticket")
       .addStringOption((option) =>
@@ -2251,6 +2254,62 @@ client.on("interactionCreate", async (interaction) => {
         await closeTicket(ticket.id, interaction.user.id, reason);
         return;
       }
+    }
+
+    if (interaction.commandName === "forceunclaim") {
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      const isAdministrator = member?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
+
+      if (!requesterIsSuperuser && !isAdministrator) {
+        await interaction.reply({
+          content: `<@${interaction.user.id}> only superusers or administrators can force unclaim a ticket.`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (!ticket.claimedById) {
+        await interaction.reply({ content: "This ticket is not currently claimed.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: {
+          claimedById: null,
+          status: TicketStatus.Open,
+          lastActivityAt: new Date()
+        }
+      });
+
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (channel && channel.type === ChannelType.GuildText) {
+        const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, ticket.supportTeamId);
+        await channel.permissionOverwrites.set(overwrites);
+      }
+
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "FORCE_UNCLAIM",
+          actorId: interaction.user.id,
+          data: { previousClaimerId: ticket.claimedById }
+        }
+      });
+
+      await interaction.reply({
+        content: requesterIsSuperuser
+          ? "Unclaim forced by superuser."
+          : "Unclaim forced by administrator."
+      });
+      return;
     }
 
     if (["add", "remove"].includes(interaction.commandName)) {
