@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "@ukrrp/db";
-import { requireDashboardAccess, requireSession } from "../middleware/auth.js";
-import { fetchDiscordUserById } from "../services/discord.js";
+import { evaluateAccess, requireDashboardAccess, requireSession } from "../middleware/auth.js";
+import { fetchDiscordUserById, fetchGuildMember, fetchGuildRoles } from "../services/discord.js";
 import { forceCloseOpenTickets } from "../services/tickets.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 
@@ -62,10 +62,84 @@ const resolveUsernames = async (ids: string[]) => {
   return map;
 };
 
+const getAccessibleSupportTeamIds = async (guildId: string, userId: string, isFullAccess: boolean) => {
+  if (isFullAccess) {
+    return null;
+  }
+
+  const [member, guildRoles, supportTeams] = await Promise.all([
+    fetchGuildMember(guildId, userId),
+    fetchGuildRoles(guildId),
+    prisma.supportTeam.findMany({
+      where: { guildId },
+      select: {
+        id: true,
+        roles: {
+          select: {
+            roleId: true
+          }
+        }
+      }
+    })
+  ]);
+
+  if (!member) {
+    return new Set<string>();
+  }
+
+  const memberRoleIds = new Set<string>(member.roles || []);
+  const rolePositionById = new Map<string, number>(guildRoles.map((role) => [role.id, role.position]));
+  const memberHighestPosition = [...memberRoleIds].reduce((highest, roleId) => {
+    const position = rolePositionById.get(roleId);
+    return typeof position === "number" ? Math.max(highest, position) : highest;
+  }, -1);
+
+  if (memberHighestPosition < 0) {
+    return new Set<string>();
+  }
+
+  const allowedSupportTeamIds = new Set<string>();
+  supportTeams.forEach((team) => {
+    const teamRoleIds = team.roles.map((role) => role.roleId);
+    const hasDirectTeamRole = teamRoleIds.some((roleId) => memberRoleIds.has(roleId));
+    const teamHighestPosition = teamRoleIds.reduce((highest, roleId) => {
+      const position = rolePositionById.get(roleId);
+      return typeof position === "number" ? Math.max(highest, position) : highest;
+    }, -1);
+
+    if (hasDirectTeamRole || (teamHighestPosition >= 0 && teamHighestPosition <= memberHighestPosition)) {
+      allowedSupportTeamIds.add(team.id);
+    }
+  });
+
+  return allowedSupportTeamIds;
+};
+
 transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
+  const userId = String(req.session.user?.id || "");
+  const access = await evaluateAccess(req, res);
+  if (!access) {
+    return;
+  }
+
+  const accessibleSupportTeamIds = await getAccessibleSupportTeamIds(
+    guildId,
+    userId,
+    access.isSuperuser || access.isAdmin
+  );
+  if (accessibleSupportTeamIds && accessibleSupportTeamIds.size === 0) {
+    res.json({ transcripts: [] });
+    return;
+  }
+
   const tickets = await prisma.ticket.findMany({
-    where: { guildId },
+    where: {
+      guildId,
+      ...(accessibleSupportTeamIds
+        ? { supportTeamId: { in: [...accessibleSupportTeamIds] } }
+        : {})
+    },
     include: {
       events: {
         where: { type: "CLOSE" },
@@ -108,7 +182,19 @@ transcriptsRouter.get("/", requireSession, requireDashboardAccess, async (req, r
 
 transcriptsRouter.get("/:ticketId", requireSession, requireDashboardAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
+  const userId = String(req.session.user?.id || "");
   const ticketId = String(req.params.ticketId || "");
+  const access = await evaluateAccess(req, res);
+  if (!access) {
+    return;
+  }
+
+  const accessibleSupportTeamIds = await getAccessibleSupportTeamIds(
+    guildId,
+    userId,
+    access.isSuperuser || access.isAdmin
+  );
+
   const ticket = await prisma.ticket.findFirst({
     where: { id: ticketId, guildId },
     include: {
@@ -123,6 +209,11 @@ transcriptsRouter.get("/:ticketId", requireSession, requireDashboardAccess, asyn
 
   if (!ticket || !ticket.transcript) {
     res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  if (accessibleSupportTeamIds && !accessibleSupportTeamIds.has(ticket.supportTeamId)) {
+    res.status(403).json({ error: "forbidden" });
     return;
   }
 

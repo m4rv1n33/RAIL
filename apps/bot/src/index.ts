@@ -971,6 +971,42 @@ const buildPanelEmbed = async (panelId: string) => {
   return { panel, embeds: [topBanner, embed, bottomBanner], components: [row], files };
 };
 
+const getHierarchyVisibleSupportRoleIds = async (
+  guild: import("discord.js").Guild,
+  guildId: string,
+  teamRoleIds: string[]
+) => {
+  const uniqueTeamRoleIds = [...new Set(teamRoleIds)];
+  if (uniqueTeamRoleIds.length === 0) {
+    return uniqueTeamRoleIds;
+  }
+
+  const [allSupportRoles, guildRoles] = await Promise.all([
+    prisma.supportTeamRole.findMany({
+      where: { team: { guildId } },
+      select: { roleId: true }
+    }),
+    guild.roles.fetch()
+  ]);
+
+  const allSupportRoleIds = [...new Set(allSupportRoles.map((entry) => entry.roleId))];
+  const teamRolePositions = uniqueTeamRoleIds
+    .map((roleId) => guildRoles.get(roleId)?.position)
+    .filter((position): position is number => typeof position === "number");
+
+  if (teamRolePositions.length === 0) {
+    return uniqueTeamRoleIds;
+  }
+
+  const teamHighestPosition = Math.max(...teamRolePositions);
+  const hierarchyRoleIds = allSupportRoleIds.filter((roleId) => {
+    const position = guildRoles.get(roleId)?.position;
+    return typeof position === "number" && position >= teamHighestPosition;
+  });
+
+  return [...new Set([...uniqueTeamRoleIds, ...hierarchyRoleIds])];
+};
+
 const buildPermissionOverwrites = async (guildId: string, userId: string, supportTeamId: string) => {
   const guild = await client.guilds.fetch(guildId);
   const botMemberId = guild.members.me?.id || client.user?.id || null;
@@ -981,44 +1017,63 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
   if (!team) {
     throw new Error("team_not_found");
   }
-  const overwrites = [
+  const visibleSupportRoleIds = await getHierarchyVisibleSupportRoleIds(
+    guild,
+    guildId,
+    team.roles.map((role) => role.roleId)
+  );
+  const overwriteById = new Map<
+    string,
     {
-      id: guild.roles.everyone.id,
-      deny: [PermissionsBitField.Flags.ViewChannel]
-    },
-    ...(botMemberId
-      ? [
-          {
-            id: botMemberId,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory,
-              PermissionsBitField.Flags.ManageChannels,
-              PermissionsBitField.Flags.ManageMessages
-            ]
-          }
-        ]
-      : []),
-    {
-      id: userId,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ]
+      id: string;
+      allow?: bigint[];
+      deny?: bigint[];
     }
-  ];
-  team.roles.forEach((role) => {
-    overwrites.push({
-      id: role.roleId,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ]
-    });
+  >();
+
+  overwriteById.set(guild.roles.everyone.id, {
+    id: guild.roles.everyone.id,
+    deny: [PermissionsBitField.Flags.ViewChannel]
   });
+
+  const upsertAllowOverwrite = (id: string, allow: bigint[]) => {
+    const existing = overwriteById.get(id);
+    const mergedAllow = new Set([...(existing?.allow || []), ...allow]);
+    const mergedDeny = new Set(existing?.deny || []);
+    overwriteById.set(id, {
+      id,
+      allow: [...mergedAllow],
+      deny: [...mergedDeny]
+    });
+  };
+
+  if (botMemberId) {
+    upsertAllowOverwrite(botMemberId, [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory,
+      PermissionsBitField.Flags.ManageChannels,
+      PermissionsBitField.Flags.ManageMessages
+    ]);
+  }
+
+  upsertAllowOverwrite(userId, [
+    PermissionsBitField.Flags.ViewChannel,
+    PermissionsBitField.Flags.SendMessages,
+    PermissionsBitField.Flags.ReadMessageHistory
+  ]);
+
+  visibleSupportRoleIds.forEach((roleId) => {
+    upsertAllowOverwrite(roleId, [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]);
+  });
+
+  const overwrites = [
+    ...overwriteById.values()
+  ];
   return { overwrites, team };
 };
 
@@ -1146,8 +1201,17 @@ const applyClaimedPermissions = async (ticketId: string, claimedById: string) =>
   if (!channel || channel.type !== ChannelType.GuildText) {
     return;
   }
-  for (const role of ticket.supportTeam.roles) {
-    await channel.permissionOverwrites.edit(role.roleId, {
+  const guild = await client.guilds.fetch(ticket.guildId).catch(() => null);
+  if (!guild) {
+    return;
+  }
+  const visibleSupportRoleIds = await getHierarchyVisibleSupportRoleIds(
+    guild,
+    ticket.guildId,
+    ticket.supportTeam.roles.map((role) => role.roleId)
+  );
+  for (const roleId of visibleSupportRoleIds) {
+    await channel.permissionOverwrites.edit(roleId, {
       ViewChannel: true,
       ReadMessageHistory: true,
       SendMessages: false
@@ -1567,12 +1631,18 @@ const registerCommands = async () => {
       ),
     new SlashCommandBuilder()
       .setName("remove")
-      .setDescription("Remove an account from the current ticket")
+      .setDescription("Remove an account or role from the current ticket")
       .addUserOption((option) =>
         option
           .setName("account")
           .setDescription("Account to remove")
-          .setRequired(true)
+          .setRequired(false)
+      )
+      .addRoleOption((option) =>
+        option
+          .setName("role")
+          .setDescription("Role to remove")
+          .setRequired(false)
       ),
     new SlashCommandBuilder()
       .setName("panel")
@@ -2198,20 +2268,40 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const target = interaction.options.getUser("account", true);
+      const targetUser = interaction.options.getUser("account", false);
+      const targetRole = interaction.options.getRole("role", false);
+      if (!targetUser && !targetRole) {
+        await interaction.reply({
+          content: "Provide either an account or a role to remove.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      if (targetUser && targetRole) {
+        await interaction.reply({
+          content: "Please provide only one target: either account or role.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
       const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
       if (!channel || channel.type !== ChannelType.GuildText) {
         await interaction.reply({ content: "Ticket channel not found.", flags: MessageFlags.Ephemeral });
         return;
       }
 
-      if (interaction.commandName === "remove" && target.id === ticket.ownerId) {
+      if (interaction.commandName === "remove" && targetUser && targetUser.id === ticket.ownerId) {
         await interaction.reply({ content: "You cannot remove the ticket creator from this ticket.", flags: MessageFlags.Ephemeral });
         return;
       }
 
       if (interaction.commandName === "add") {
-        await channel.permissionOverwrites.edit(target.id, {
+        if (!targetUser) {
+          await interaction.reply({ content: "Provide an account to add.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await channel.permissionOverwrites.edit(targetUser.id, {
           ViewChannel: true,
           ReadMessageHistory: true,
           SendMessages: true
@@ -2221,35 +2311,55 @@ client.on("interactionCreate", async (interaction) => {
             ticketId: ticket.id,
             type: "ADD_USER",
             actorId: interaction.user.id,
-            data: { userId: target.id }
+            data: { userId: targetUser.id }
           }
         });
         await prisma.ticket.update({
           where: { id: ticket.id },
           data: { lastActivityAt: new Date() }
         });
-        await interaction.reply({ content: `<@${target.id}> has been added to the ticket.` });
+        await interaction.reply({ content: `<@${targetUser.id}> has been added to the ticket.` });
         return;
       }
 
-      await channel.permissionOverwrites.edit(target.id, {
-        ViewChannel: false,
-        ReadMessageHistory: false,
-        SendMessages: false
-      });
-      await prisma.ticketEvent.create({
-        data: {
-          ticketId: ticket.id,
-          type: "REMOVE_USER",
-          actorId: interaction.user.id,
-          data: { userId: target.id }
-        }
-      });
+      if (targetUser) {
+        await channel.permissionOverwrites.edit(targetUser.id, {
+          ViewChannel: false,
+          ReadMessageHistory: false,
+          SendMessages: false
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "REMOVE_USER",
+            actorId: interaction.user.id,
+            data: { userId: targetUser.id }
+          }
+        });
+      } else if (targetRole) {
+        await channel.permissionOverwrites.edit(targetRole.id, {
+          ViewChannel: false,
+          ReadMessageHistory: false,
+          SendMessages: false
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "REMOVE_ROLE",
+            actorId: interaction.user.id,
+            data: { roleId: targetRole.id }
+          }
+        });
+      }
       await prisma.ticket.update({
         where: { id: ticket.id },
         data: { lastActivityAt: new Date() }
       });
-      await interaction.reply({ content: `<@${target.id}> has been removed from the ticket.` });
+      await interaction.reply({
+        content: targetUser
+          ? `<@${targetUser.id}> has been removed from the ticket.`
+          : `<@&${targetRole!.id}> has been removed from the ticket.`
+      });
       return;
     }
 
