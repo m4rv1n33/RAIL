@@ -2257,9 +2257,11 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "forceunclaim") {
+      await interaction.deferReply();
+
       const ticket = await getTicketByChannel(interaction.channelId);
       if (!ticket) {
-        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: "Use this in a ticket channel." });
         return;
       }
 
@@ -2268,15 +2270,14 @@ client.on("interactionCreate", async (interaction) => {
       const isAdministrator = member?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
 
       if (!requesterIsSuperuser && !isAdministrator) {
-        await interaction.reply({
-          content: `<@${interaction.user.id}> only superusers or administrators can force unclaim a ticket.`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `<@${interaction.user.id}> only superusers or administrators can force unclaim a ticket.`
         });
         return;
       }
 
       if (!ticket.claimedById) {
-        await interaction.reply({ content: "This ticket is not currently claimed.", flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: "This ticket is not currently claimed." });
         return;
       }
 
@@ -2304,7 +2305,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       });
 
-      await interaction.reply({
+      await interaction.editReply({
         content: requesterIsSuperuser
           ? "Unclaim forced by superuser."
           : "Unclaim forced by administrator."
