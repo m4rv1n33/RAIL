@@ -159,6 +159,14 @@ export const App = () => {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
   const shownErrorMessagesRef = useRef<Set<string>>(new Set());
+  const loginHref = useMemo(() => {
+    const base = `${import.meta.env.VITE_API_BASE}/auth/login`;
+    if (typeof window === "undefined") {
+      return base;
+    }
+    const returnTo = `${window.location.origin}/`;
+    return `${base}?return_to=${encodeURIComponent(returnTo)}`;
+  }, []);
 
   const getErrorMessage = (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback;
@@ -665,7 +673,7 @@ export const App = () => {
         <div className="card login-card">
           <h1>{appName}</h1>
           <p>Sign in with Discord to manage tickets and panels.</p>
-          <a className="button" href={`${import.meta.env.VITE_API_BASE}/auth/login`}>
+          <a className="button" href={loginHref}>
             Log in with Discord
           </a>
         </div>

@@ -5,12 +5,45 @@ import { evaluateAccess } from "../middleware/auth.js";
 
 export const authRouter = Router();
 
+const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, "");
+
+const getAllowedDashboardOrigins = () => {
+  const primary = normalizeOrigin(String(process.env.DASHBOARD_ORIGIN || ""));
+  const extras = String(process.env.DASHBOARD_ORIGINS || "")
+    .split(",")
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
+  return new Set([primary, ...extras].filter(Boolean));
+};
+
+const sanitizeReturnTo = (candidate: string) => {
+  if (!candidate) {
+    return "";
+  }
+  try {
+    const parsed = new URL(candidate);
+    const normalizedOrigin = normalizeOrigin(parsed.origin);
+    const allowedOrigins = getAllowedDashboardOrigins();
+    if (!allowedOrigins.has(normalizedOrigin)) {
+      return "";
+    }
+    return `${normalizedOrigin}${parsed.pathname || "/"}`;
+  } catch {
+    return "";
+  }
+};
+
 authRouter.get("/login", (req, res) => {
+  const requestedReturnTo = sanitizeReturnTo(String(req.query.return_to || ""));
+  const fallbackReturnTo = sanitizeReturnTo(String(process.env.DASHBOARD_ORIGIN || ""));
+  const returnTo = requestedReturnTo || fallbackReturnTo || "/";
+  const statePayload = JSON.stringify({ returnTo });
   const params = new URLSearchParams({
     client_id: process.env.DISCORD_CLIENT_ID || "",
     redirect_uri: process.env.DISCORD_REDIRECT_URI || "",
     response_type: "code",
-    scope: "identify guilds guilds.members.read"
+    scope: "identify guilds guilds.members.read",
+    state: Buffer.from(statePayload, "utf-8").toString("base64url")
   });
   res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
 });
@@ -21,6 +54,23 @@ authRouter.get("/callback", async (req, res) => {
     res.status(400).json({ error: "missing_code" });
     return;
   }
+  const stateValue = String(req.query.state || "");
+  let returnTo = sanitizeReturnTo(String(process.env.DASHBOARD_ORIGIN || "")) || "/";
+  if (stateValue) {
+    try {
+      const decoded = Buffer.from(stateValue, "base64url").toString("utf-8");
+      const parsed = JSON.parse(decoded) as { returnTo?: unknown };
+      if (typeof parsed.returnTo === "string") {
+        const stateReturnTo = sanitizeReturnTo(parsed.returnTo);
+        if (stateReturnTo) {
+          returnTo = stateReturnTo;
+        }
+      }
+    } catch {
+      // Ignore malformed state and fall back to configured origin.
+    }
+  }
+
   const token = await exchangeCode(code);
   const user = await fetchDiscordUser(token.access_token);
   req.session.user = {
@@ -36,7 +86,7 @@ authRouter.get("/callback", async (req, res) => {
       res.status(500).json({ error: "session_save_failed" });
       return;
     }
-    const redirectTarget = process.env.DASHBOARD_ORIGIN || "/";
+    const redirectTarget = returnTo;
     const escapedRedirectTarget = redirectTarget.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
     const scriptRedirectTarget = JSON.stringify(redirectTarget);
     res.setHeader("Cache-Control", "no-store");

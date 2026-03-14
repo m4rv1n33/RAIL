@@ -13,7 +13,13 @@ export const createApp = () => {
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
   const sessionSecret = String(process.env.SESSION_SECRET || "ukrrp-dev-session-secret");
-  const dashboardOrigin = String(process.env.DASHBOARD_ORIGIN || "");
+  const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, "");
+  const dashboardOrigin = normalizeOrigin(String(process.env.DASHBOARD_ORIGIN || ""));
+  const extraOrigins = String(process.env.DASHBOARD_ORIGINS || "")
+    .split(",")
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
+  const allowedOrigins = new Set([dashboardOrigin, ...extraOrigins].filter(Boolean));
   const dashboardOverHttps = dashboardOrigin.startsWith("https://");
   const forceSecureCookie = String(process.env.SESSION_COOKIE_SECURE || "").toLowerCase() === "true";
   const useSecureCookie = isProduction || dashboardOverHttps || forceSecureCookie;
@@ -31,7 +37,18 @@ export const createApp = () => {
 
   app.use(
     cors({
-      origin: process.env.DASHBOARD_ORIGIN,
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        const normalizedOrigin = normalizeOrigin(origin);
+        if (allowedOrigins.has(normalizedOrigin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error("cors_origin_not_allowed"));
+      },
       credentials: true
     })
   );
