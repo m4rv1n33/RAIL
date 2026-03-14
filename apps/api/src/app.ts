@@ -12,6 +12,7 @@ import { transcriptsRouter } from "./routes/transcripts.js";
 export const createApp = () => {
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
+  const sessionSecret = String(process.env.SESSION_SECRET || "ukrrp-dev-session-secret");
   const dashboardOrigin = String(process.env.DASHBOARD_ORIGIN || "");
   const dashboardOverHttps = dashboardOrigin.startsWith("https://");
   const forceSecureCookie = String(process.env.SESSION_COOKIE_SECURE || "").toLowerCase() === "true";
@@ -50,7 +51,7 @@ export const createApp = () => {
   });
   app.use(
     session({
-      secret: process.env.SESSION_SECRET,
+      secret: sessionSecret,
       proxy: isProduction,
       resave: false,
       saveUninitialized: false,
