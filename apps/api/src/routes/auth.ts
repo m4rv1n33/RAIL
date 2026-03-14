@@ -167,6 +167,14 @@ authRouter.get("/me", async (req, res) => {
   res.setHeader("x-auth-debug-has-header", hasAuthHeader ? "1" : "0");
 
   if (!user) {
+    console.info("[auth-debug] /auth/me resolved unauthenticated", {
+      authSource,
+      hadSessionBefore,
+      hasAuthCookie,
+      hasAuthHeader,
+      guildId: String(req.headers["x-guild-id"] || ""),
+      userAgent: String(req.headers["user-agent"] || "")
+    });
     res.json({ user: null });
     return;
   }
@@ -177,11 +185,29 @@ authRouter.get("/me", async (req, res) => {
   if (guildId) {
     const access = await evaluateAccess(req, res);
     if (!access) {
+      console.info("[auth-debug] /auth/me evaluateAccess returned null", {
+        authSource,
+        userId: user.id,
+        guildId,
+        userAgent: String(req.headers["user-agent"] || "")
+      });
       return;
     }
     canAccessDashboard = access.isSuperuser || access.isAdmin || access.hasManagementRole || access.hasStaffRole;
     canManage = access.isSuperuser || access.isAdmin || access.hasManagementRole;
   }
+
+  console.info("[auth-debug] /auth/me resolved authenticated", {
+    authSource,
+    userId: user.id,
+    guildId,
+    canAccessDashboard,
+    canManage,
+    hasAuthCookie,
+    hasAuthHeader,
+    hadSessionBefore,
+    userAgent: String(req.headers["user-agent"] || "")
+  });
 
   res.json({
     user: {
