@@ -104,43 +104,9 @@ authRouter.get("/callback", async (req, res) => {
     const persistedUser = req.session.user!;
     setAuthCookie(res, persistedUser);
     const authToken = createAuthToken(persistedUser);
-    const redirectTarget = returnTo;
-    const escapedRedirectTarget = redirectTarget.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    const scriptRedirectBase = JSON.stringify(redirectTarget);
-    const scriptAuthToken = JSON.stringify(authToken);
-    res.setHeader("Cache-Control", "no-store");
-    res.status(200).type("html").send(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Login Complete</title>
-  </head>
-  <body style="font-family: sans-serif; padding: 20px;">
-    <p>Login complete. Redirecting back to dashboard...</p>
-    <p><a href="${escapedRedirectTarget}">Continue</a></p>
-    <script>
-      (function () {
-        var base = ${scriptRedirectBase};
-        var token = ${scriptAuthToken};
-        try {
-          var target = new URL(base, window.location.origin);
-          target.searchParams.set("auth_token", token);
-          target.hash = "#/";
-          setTimeout(function () {
-            window.location.replace(target.toString());
-          }, 150);
-          return;
-        } catch (_) {
-          // Fall back to direct redirect below.
-        }
-      })();
-      setTimeout(function () {
-        window.location.replace(${scriptRedirectBase});
-      }, 150);
-    </script>
-  </body>
-</html>`);
+    const redirectUrl = new URL(returnTo);
+    redirectUrl.searchParams.set("auth_token", authToken);
+    res.redirect(302, redirectUrl.toString());
   });
 });
 
