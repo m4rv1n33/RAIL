@@ -21,7 +21,9 @@ export const createApp = () => {
   const cookieSameSite =
     sameSiteEnv === "none" || sameSiteEnv === "lax" || sameSiteEnv === "strict"
       ? sameSiteEnv
-      : "lax";
+      : useSecureCookie
+        ? "none"
+        : "lax";
 
   if (isProduction || useSecureCookie) {
     app.set("trust proxy", 1);

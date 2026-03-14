@@ -36,7 +36,27 @@ authRouter.get("/callback", async (req, res) => {
       res.status(500).json({ error: "session_save_failed" });
       return;
     }
-    res.redirect(process.env.DASHBOARD_ORIGIN || "/");
+    const redirectTarget = process.env.DASHBOARD_ORIGIN || "/";
+    const escapedRedirectTarget = redirectTarget.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const scriptRedirectTarget = JSON.stringify(redirectTarget);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).type("html").send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login Complete</title>
+  </head>
+  <body style="font-family: sans-serif; padding: 20px;">
+    <p>Login complete. Redirecting back to dashboard...</p>
+    <p><a href="${escapedRedirectTarget}">Continue</a></p>
+    <script>
+      setTimeout(function () {
+        window.location.replace(${scriptRedirectTarget});
+      }, 150);
+    </script>
+  </body>
+</html>`);
   });
 });
 
