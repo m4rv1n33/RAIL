@@ -69,6 +69,17 @@ const getRawAuthCookie = (req: Request) => {
   return parsed.get(AUTH_COOKIE_NAME) || "";
 };
 
+const getRawAuthHeaderToken = (req: Request) => {
+  const headerValue = req.headers["x-auth-token"];
+  if (typeof headerValue === "string") {
+    return headerValue.trim();
+  }
+  if (Array.isArray(headerValue) && headerValue.length > 0) {
+    return String(headerValue[0] || "").trim();
+  }
+  return "";
+};
+
 const decodeAuthCookie = (rawValue: string): AuthCookiePayload | null => {
   if (!rawValue || !rawValue.includes(".")) {
     return null;
@@ -103,14 +114,20 @@ const decodeAuthCookie = (rawValue: string): AuthCookiePayload | null => {
   }
 };
 
-export const setAuthCookie = (res: Response, user: SessionUser) => {
+export const createAuthToken = (user: SessionUser) => {
   const payload: AuthCookiePayload = {
     user,
     exp: Date.now() + AUTH_COOKIE_MAX_AGE_MS
   };
   const payloadEncoded = base64UrlEncode(JSON.stringify(payload));
   const signature = signValue(payloadEncoded);
-  const value = `${payloadEncoded}.${signature}`;
+  return `${payloadEncoded}.${signature}`;
+};
+
+const decodeAuthToken = (rawValue: string) => decodeAuthCookie(rawValue);
+
+export const setAuthCookie = (res: Response, user: SessionUser) => {
+  const value = createAuthToken(user);
   const { secure, sameSite } = getCookieSecurityOptions();
   res.cookie(AUTH_COOKIE_NAME, value, {
     httpOnly: true,
@@ -140,6 +157,22 @@ export const restoreSessionUserFromAuthCookie = (req: Request) => {
     return null;
   }
   const payload = decodeAuthCookie(rawCookie);
+  if (!payload) {
+    return null;
+  }
+  req.session.user = payload.user;
+  return payload.user;
+};
+
+export const restoreSessionUserFromAuthHeader = (req: Request) => {
+  if (req.session.user) {
+    return req.session.user;
+  }
+  const rawToken = getRawAuthHeaderToken(req);
+  if (!rawToken) {
+    return null;
+  }
+  const payload = decodeAuthToken(rawToken);
   if (!payload) {
     return null;
   }

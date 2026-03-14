@@ -64,6 +64,7 @@ type TranscriptDetail = {
 };
 
 const THEME_STORAGE_KEY = "ukrrp-dashboard-theme";
+const AUTH_TOKEN_STORAGE_KEY = "ukrrp-dashboard-auth-token";
 type Theme = "dark" | "light";
 
 const getInitialTheme = (): Theme => {
@@ -159,6 +160,18 @@ export const App = () => {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
   const shownErrorMessagesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const hashValue = window.location.hash || "";
+    if (!hashValue.startsWith("#auth_token=")) {
+      return;
+    }
+    const token = decodeURIComponent(hashValue.slice("#auth_token=".length));
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    }
+    window.history.replaceState(null, "", window.location.pathname + window.location.search + "#/" );
+  }, []);
   const loginHref = useMemo(() => {
     const base = `${import.meta.env.VITE_API_BASE}/auth/login`;
     if (typeof window === "undefined") {
@@ -696,6 +709,7 @@ export const App = () => {
             className="button secondary"
             onClick={() =>
               apiFetch("/auth/logout", { method: "POST" }).then(() => {
+                window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
                 window.location.reload();
               })
             }
@@ -753,6 +767,7 @@ export const App = () => {
           className="button secondary"
           onClick={() =>
             apiFetch("/auth/logout", { method: "POST" }).then(() => {
+              window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
               window.location.reload();
             })
           }

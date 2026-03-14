@@ -1,5 +1,6 @@
 const apiBase = import.meta.env.VITE_API_BASE as string;
 const guildId = import.meta.env.VITE_GUILD_ID as string;
+const authTokenStorageKey = "ukrrp-dashboard-auth-token";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -14,6 +15,9 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
         headers: {
           "Content-Type": "application/json",
           "x-guild-id": guildId,
+          ...(typeof window !== "undefined" && window.localStorage.getItem(authTokenStorageKey)
+            ? { "x-auth-token": window.localStorage.getItem(authTokenStorageKey) as string }
+            : {}),
           ...(options.headers || {})
         }
       });
@@ -29,6 +33,9 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
           } else if (body?.error === "category_in_use") {
             details = "Category cannot be deleted because tickets still reference it.";
           } else if (body?.error === "reauth_required") {
+            if (typeof window !== "undefined") {
+              window.localStorage.removeItem(authTokenStorageKey);
+            }
             details = "Session needs re-authorization. Please log out and sign in again.";
           } else if (body?.error === "bot_auth_failed") {
             details = "API cannot verify guild membership because DISCORD_BOT_TOKEN is missing or invalid in the API environment.";

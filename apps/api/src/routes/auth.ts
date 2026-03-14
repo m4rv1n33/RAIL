@@ -2,7 +2,13 @@ import { Router } from "express";
 import { exchangeCode, fetchDiscordUser } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 import { evaluateAccess } from "../middleware/auth.js";
-import { clearAuthCookie, restoreSessionUserFromAuthCookie, setAuthCookie } from "../utils/authCookie.js";
+import {
+  clearAuthCookie,
+  createAuthToken,
+  restoreSessionUserFromAuthCookie,
+  restoreSessionUserFromAuthHeader,
+  setAuthCookie
+} from "../utils/authCookie.js";
 
 export const authRouter = Router();
 
@@ -95,10 +101,13 @@ authRouter.get("/callback", async (req, res) => {
       res.status(500).json({ error: "session_save_failed" });
       return;
     }
-    setAuthCookie(res, req.session.user!);
+    const persistedUser = req.session.user!;
+    setAuthCookie(res, persistedUser);
+    const authToken = createAuthToken(persistedUser);
     const redirectTarget = returnTo;
     const escapedRedirectTarget = redirectTarget.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    const scriptRedirectTarget = JSON.stringify(redirectTarget);
+    const scriptRedirectBase = JSON.stringify(redirectTarget);
+    const scriptAuthToken = JSON.stringify(authToken);
     res.setHeader("Cache-Control", "no-store");
     res.status(200).type("html").send(`<!doctype html>
 <html lang="en">
@@ -111,8 +120,22 @@ authRouter.get("/callback", async (req, res) => {
     <p>Login complete. Redirecting back to dashboard...</p>
     <p><a href="${escapedRedirectTarget}">Continue</a></p>
     <script>
+      (function () {
+        var base = ${scriptRedirectBase};
+        var token = ${scriptAuthToken};
+        try {
+          var target = new URL(base, window.location.origin);
+          target.hash = "auth_token=" + encodeURIComponent(token);
+          setTimeout(function () {
+            window.location.replace(target.toString());
+          }, 150);
+          return;
+        } catch (_) {
+          // Fall back to direct redirect below.
+        }
+      })();
       setTimeout(function () {
-        window.location.replace(${scriptRedirectTarget});
+        window.location.replace(${scriptRedirectBase});
       }, 150);
     </script>
   </body>
@@ -121,7 +144,7 @@ authRouter.get("/callback", async (req, res) => {
 });
 
 authRouter.get("/me", async (req, res) => {
-  const user = restoreSessionUserFromAuthCookie(req) || null;
+  const user = restoreSessionUserFromAuthCookie(req) || restoreSessionUserFromAuthHeader(req) || null;
   if (!user) {
     res.json({ user: null });
     return;
