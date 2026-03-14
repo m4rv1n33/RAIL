@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { fetchCurrentUserGuild, fetchCurrentUserGuildMember, fetchGuildMember } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
+import { restoreSessionUserFromAuthCookie } from "../utils/authCookie.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -15,6 +16,7 @@ declare module "express-session" {
 }
 
 export const requireSession = (req: Request, res: Response, next: NextFunction) => {
+  restoreSessionUserFromAuthCookie(req);
   if (!req.session.user) {
     res.status(401).json({ error: "unauthorized" });
     return;
@@ -52,7 +54,7 @@ const hasOAuthAdminPermission = async (res: Response, userAccessToken: string, g
 };
 
 export const evaluateAccess = async (req: Request, res: Response): Promise<AccessEvaluation | null> => {
-  const user = req.session.user;
+  const user = restoreSessionUserFromAuthCookie(req) || req.session.user;
   const guildId = String(req.headers["x-guild-id"] || "");
 
   if (!user || !guildId) {

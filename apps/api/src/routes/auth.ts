@@ -2,6 +2,7 @@ import { Router } from "express";
 import { exchangeCode, fetchDiscordUser } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 import { evaluateAccess } from "../middleware/auth.js";
+import { clearAuthCookie, restoreSessionUserFromAuthCookie, setAuthCookie } from "../utils/authCookie.js";
 
 export const authRouter = Router();
 
@@ -94,6 +95,7 @@ authRouter.get("/callback", async (req, res) => {
       res.status(500).json({ error: "session_save_failed" });
       return;
     }
+    setAuthCookie(res, req.session.user!);
     const redirectTarget = returnTo;
     const escapedRedirectTarget = redirectTarget.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
     const scriptRedirectTarget = JSON.stringify(redirectTarget);
@@ -119,7 +121,7 @@ authRouter.get("/callback", async (req, res) => {
 });
 
 authRouter.get("/me", async (req, res) => {
-  const user = req.session.user || null;
+  const user = restoreSessionUserFromAuthCookie(req) || null;
   if (!user) {
     res.json({ user: null });
     return;
@@ -149,6 +151,7 @@ authRouter.get("/me", async (req, res) => {
 
 authRouter.post("/logout", (req, res) => {
   req.session.destroy(() => {
+    clearAuthCookie(res);
     res.json({ ok: true });
   });
 });
