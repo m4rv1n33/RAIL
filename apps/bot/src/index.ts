@@ -488,6 +488,26 @@ const getMediaForumChannelIdForGuild = async (guildId: string) => {
   return channelId;
 };
 
+const getClaimerBypassRoleIdsForGuild = async (guildId: string) => {
+  const settingsFilePath = getSettingsFilePath();
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<
+      string,
+      {
+        claimerBypassRoleIds?: unknown;
+      }
+    >;
+    const configured = parsed[guildId]?.claimerBypassRoleIds;
+    if (!Array.isArray(configured)) {
+      return [];
+    }
+    return [...new Set(configured.filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+  } catch {
+    return [];
+  }
+};
+
 const parseMediaPostLinkData = (value: unknown): MediaPostLinkData | null => {
   if (!value || typeof value !== "object") {
     return null;
@@ -1488,7 +1508,16 @@ const canManageTicket = async (
   if (!ticket.claimedById) {
     return true;
   }
-  return ticket.claimedById === userId;
+  if (ticket.claimedById === userId) {
+    return true;
+  }
+
+  const claimerBypassRoleIds = await getClaimerBypassRoleIdsForGuild(guildId);
+  if (claimerBypassRoleIds.some((roleId) => roleIds.includes(roleId))) {
+    return true;
+  }
+
+  return false;
 };
 
 const switchTicketToTeam = async (

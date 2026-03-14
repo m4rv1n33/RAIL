@@ -12,8 +12,19 @@ import { transcriptsRouter } from "./routes/transcripts.js";
 export const createApp = () => {
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
+  const dashboardOrigin = String(process.env.DASHBOARD_ORIGIN || "");
+  const dashboardOverHttps = dashboardOrigin.startsWith("https://");
+  const forceSecureCookie = String(process.env.SESSION_COOKIE_SECURE || "").toLowerCase() === "true";
+  const useSecureCookie = isProduction || dashboardOverHttps || forceSecureCookie;
+  const sameSiteEnv = String(process.env.SESSION_COOKIE_SAMESITE || "").toLowerCase();
+  const cookieSameSite =
+    sameSiteEnv === "none" || sameSiteEnv === "lax" || sameSiteEnv === "strict"
+      ? sameSiteEnv
+      : useSecureCookie
+        ? "none"
+        : "lax";
 
-  if (isProduction) {
+  if (isProduction || useSecureCookie) {
     app.set("trust proxy", 1);
   }
 
@@ -39,14 +50,14 @@ export const createApp = () => {
   });
   app.use(
     session({
-      secret: process.env.SESSION_SECRET || "change-me",
+      secret: process.env.SESSION_SECRET,
       proxy: isProduction,
       resave: false,
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? "none" : "lax",
+        secure: useSecureCookie,
+        sameSite: cookieSameSite as "none" | "lax" | "strict",
         maxAge: 1000 * 60 * 60 * 8
       }
     })

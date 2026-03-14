@@ -33,7 +33,11 @@ type Panel = {
   categories: PanelCategoryLink[];
 };
 type DiscordChannel = { id: string; name: string; type: number; parentId?: string | null };
-type GuildSettings = { transcriptChannelId?: string; mediaForumChannelId?: string };
+type GuildSettings = {
+  transcriptChannelId?: string;
+  mediaForumChannelId?: string;
+  claimerBypassRoleIds?: string[];
+};
 type TranscriptSummary = {
   ticketId: string;
   ticketLabel?: string;
@@ -150,6 +154,7 @@ export const App = () => {
   const [panelDescription, setPanelDescription] = useState("Select a category below and our team will respond.");
   const [panelChannelId, setPanelChannelId] = useState("");
   const [transcriptChannelId, setTranscriptChannelId] = useState("");
+  const [claimerBypassRoleIds, setClaimerBypassRoleIds] = useState<string[]>([]);
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
@@ -225,6 +230,7 @@ export const App = () => {
       const loadedSettings = settingsData.settings || {};
       setSettings(loadedSettings);
       setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
+      setClaimerBypassRoleIds(Array.isArray(loadedSettings.claimerBypassRoleIds) ? loadedSettings.claimerBypassRoleIds : []);
       setTranscripts(transcriptData.transcripts || []);
       return;
     }
@@ -237,6 +243,7 @@ export const App = () => {
     setRoles([]);
     setSettings({});
     setTranscriptChannelId("");
+    setClaimerBypassRoleIds([]);
     setActiveTab("transcripts");
     setTranscripts(transcriptData.transcripts || []);
   };
@@ -599,11 +606,17 @@ export const App = () => {
       const response = await apiFetch("/settings", {
         method: "PUT",
         body: JSON.stringify({
-          transcriptChannelId: transcriptChannelId || null
+          transcriptChannelId: transcriptChannelId || null,
+          claimerBypassRoleIds
         })
       });
       setSettings(response.settings || {});
       setTranscriptChannelId((response.settings?.transcriptChannelId as string) || "");
+      setClaimerBypassRoleIds(
+        Array.isArray(response.settings?.claimerBypassRoleIds)
+          ? response.settings.claimerBypassRoleIds
+          : []
+      );
       alert("Settings saved.");
     } catch (error) {
       notifyErrorOnce(getErrorMessage(error, "Unable to save settings"));
@@ -952,11 +965,44 @@ export const App = () => {
                 ))}
               </select>
             </label>
+            <label>
+              Claimer Bypass Roles
+              <div className="role-picker">
+                {roles.length === 0 ? (
+                  <span className="muted">No roles found.</span>
+                ) : (
+                  roles.map((role) => {
+                    const checked = claimerBypassRoleIds.includes(role.id);
+                    return (
+                      <button
+                        key={`claimer-bypass-${role.id}`}
+                        type="button"
+                        className={checked ? "role-item checked" : "role-item"}
+                        onClick={() => {
+                          setClaimerBypassRoleIds((current) =>
+                            current.includes(role.id)
+                              ? current.filter((entry) => entry !== role.id)
+                              : [...current, role.id]
+                          );
+                        }}
+                      >
+                        <span className={checked ? "checkbox checked" : "checkbox"}>{checked ? "✓" : ""}</span>
+                        <span className="role-name" style={role.colorHex ? { color: role.colorHex } : undefined}>{role.name}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <span className="muted">Selected bypass roles: {claimerBypassRoleIds.length}</span>
+            </label>
             <button className="button secondary" onClick={saveSettings} disabled={busy}>
               Save Settings
             </button>
             <p className="muted">
               Saved transcript channel: {settings.transcriptChannelId ? `#${textChannels.find((channel) => channel.id === settings.transcriptChannelId)?.name || settings.transcriptChannelId}` : "ticket channel"}
+            </p>
+            <p className="muted">
+              Claimer bypass roles: {Array.isArray(settings.claimerBypassRoleIds) ? settings.claimerBypassRoleIds.length : 0}
             </p>
             <div className="actions">
               <button className="button" onClick={savePanel} disabled={busy}>{editingPanelId ? "Save Panel" : "Create Panel"}</button>

@@ -30,7 +30,14 @@ authRouter.get("/callback", async (req, res) => {
     avatar: user.avatar,
     accessToken: token.access_token
   };
-  res.redirect(process.env.DASHBOARD_ORIGIN || "/");
+  req.session.save((error) => {
+    if (error) {
+      console.error("[auth] Failed to persist session during OAuth callback", error);
+      res.status(500).json({ error: "session_save_failed" });
+      return;
+    }
+    res.redirect(process.env.DASHBOARD_ORIGIN || "/");
+  });
 });
 
 authRouter.get("/me", async (req, res) => {
