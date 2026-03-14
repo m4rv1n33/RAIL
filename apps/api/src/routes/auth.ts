@@ -5,6 +5,14 @@ import { evaluateAccess } from "../middleware/auth.js";
 
 export const authRouter = Router();
 
+authRouter.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Vary", "Cookie");
+  next();
+});
+
 const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, "");
 
 const getAllowedDashboardOrigins = () => {

@@ -9,6 +9,7 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
     try {
       const response = await fetch(`${apiBase}${path}`, {
         ...options,
+        cache: "no-store",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
