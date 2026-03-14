@@ -125,7 +125,8 @@ authRouter.get("/callback", async (req, res) => {
         var token = ${scriptAuthToken};
         try {
           var target = new URL(base, window.location.origin);
-          target.hash = "auth_token=" + encodeURIComponent(token);
+          target.searchParams.set("auth_token", token);
+          target.hash = "#/";
           setTimeout(function () {
             window.location.replace(target.toString());
           }, 150);
@@ -144,7 +145,27 @@ authRouter.get("/callback", async (req, res) => {
 });
 
 authRouter.get("/me", async (req, res) => {
-  const user = restoreSessionUserFromAuthCookie(req) || restoreSessionUserFromAuthHeader(req) || null;
+  const authCookieName = process.env.AUTH_COOKIE_NAME || "ukrrp_auth";
+  const hadSessionBefore = Boolean(req.session.user);
+  const hasAuthCookie = String(req.headers.cookie || "").includes(`${authCookieName}=`);
+  const hasAuthHeader = Boolean(req.headers["x-auth-token"]);
+
+  const fromCookie = restoreSessionUserFromAuthCookie(req);
+  const fromHeader = fromCookie ? null : restoreSessionUserFromAuthHeader(req);
+  const user = fromCookie || fromHeader || null;
+  const authSource = hadSessionBefore
+    ? "session"
+    : fromCookie
+      ? "cookie"
+      : fromHeader
+        ? "header"
+        : "none";
+
+  res.setHeader("x-auth-debug-source", authSource);
+  res.setHeader("x-auth-debug-had-session", hadSessionBefore ? "1" : "0");
+  res.setHeader("x-auth-debug-has-cookie", hasAuthCookie ? "1" : "0");
+  res.setHeader("x-auth-debug-has-header", hasAuthHeader ? "1" : "0");
+
   if (!user) {
     res.json({ user: null });
     return;

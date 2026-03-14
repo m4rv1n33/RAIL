@@ -16,9 +16,22 @@ declare module "express-session" {
 }
 
 export const requireSession = (req: Request, res: Response, next: NextFunction) => {
+  const authCookieName = process.env.AUTH_COOKIE_NAME || "ukrrp_auth";
+  const hadSessionBefore = Boolean(req.session.user);
+  const hasAuthCookie = String(req.headers.cookie || "").includes(`${authCookieName}=`);
+  const hasAuthHeader = Boolean(req.headers["x-auth-token"]);
+
   restoreSessionUserFromAuthCookie(req);
   restoreSessionUserFromAuthHeader(req);
   if (!req.session.user) {
+    console.warn("[auth-debug] requireSession unauthorized", {
+      method: req.method,
+      path: req.originalUrl,
+      hadSessionBefore,
+      hasAuthCookie,
+      hasAuthHeader,
+      userAgent: String(req.headers["user-agent"] || "")
+    });
     res.status(401).json({ error: "unauthorized" });
     return;
   }

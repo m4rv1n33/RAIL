@@ -162,15 +162,19 @@ export const App = () => {
   const shownErrorMessagesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search || "");
+    const queryToken = searchParams.get("auth_token") || "";
     const hashValue = window.location.hash || "";
-    if (!hashValue.startsWith("#auth_token=")) {
-      return;
-    }
-    const token = decodeURIComponent(hashValue.slice("#auth_token=".length));
+    const hashToken = hashValue.startsWith("#auth_token=")
+      ? decodeURIComponent(hashValue.slice("#auth_token=".length))
+      : "";
+    const token = queryToken || hashToken;
     if (token) {
       window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
     }
-    window.history.replaceState(null, "", window.location.pathname + window.location.search + "#/" );
+    if (queryToken || hashToken) {
+      window.history.replaceState(null, "", window.location.pathname + "#/" );
+    }
   }, []);
   const loginHref = useMemo(() => {
     const base = `${import.meta.env.VITE_API_BASE}/auth/login`;
