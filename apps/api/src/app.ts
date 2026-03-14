@@ -21,9 +21,7 @@ export const createApp = () => {
   const cookieSameSite =
     sameSiteEnv === "none" || sameSiteEnv === "lax" || sameSiteEnv === "strict"
       ? sameSiteEnv
-      : useSecureCookie
-        ? "none"
-        : "lax";
+      : "lax";
 
   if (isProduction || useSecureCookie) {
     app.set("trust proxy", 1);
@@ -52,7 +50,7 @@ export const createApp = () => {
   app.use(
     session({
       secret: sessionSecret,
-      proxy: isProduction,
+      proxy: useSecureCookie,
       resave: false,
       saveUninitialized: false,
       cookie: {
