@@ -2040,6 +2040,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
 };
 
 client.on("interactionCreate", async (interaction) => {
+  try {
   if (interaction.isAutocomplete()) {
     if (interaction.commandName === "switchcategory") {
       await autocompleteTeams(interaction);
@@ -3101,6 +3102,41 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
     return;
+  }
+  } catch (error) {
+    console.error("[interaction] Unhandled interaction error", {
+      interactionType: interaction.type,
+      commandName: interaction.isChatInputCommand() ? interaction.commandName : undefined,
+      customId:
+        interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()
+          ? interaction.customId
+          : undefined,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user?.id,
+      error
+    });
+
+    if (interaction.isAutocomplete()) {
+      await interaction.respond([]).catch(() => null);
+      return;
+    }
+
+    if (!interaction.isRepliable()) {
+      return;
+    }
+
+    const fallbackMessage = "Something went wrong while processing that action. Please try again.";
+    if (interaction.deferred) {
+      await interaction.editReply({ content: fallbackMessage }).catch(() => null);
+      return;
+    }
+    if (interaction.replied) {
+      await interaction.followUp({ content: fallbackMessage, flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+
+    await interaction.reply({ content: fallbackMessage, flags: MessageFlags.Ephemeral }).catch(() => null);
   }
 });
 

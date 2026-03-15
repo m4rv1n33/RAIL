@@ -67,21 +67,34 @@ const getAccessibleSupportTeamIds = async (guildId: string, userId: string, isFu
     return null;
   }
 
-  const [member, guildRoles, supportTeams] = await Promise.all([
-    fetchGuildMember(guildId, userId),
-    fetchGuildRoles(guildId),
-    prisma.supportTeam.findMany({
-      where: { guildId },
-      select: {
-        id: true,
-        roles: {
-          select: {
-            roleId: true
+  let member: Awaited<ReturnType<typeof fetchGuildMember>> = null;
+  let guildRoles: Awaited<ReturnType<typeof fetchGuildRoles>> = [];
+  let supportTeams: Array<{ id: string; roles: Array<{ roleId: string }> }> = [];
+
+  try {
+    [member, guildRoles, supportTeams] = await Promise.all([
+      fetchGuildMember(guildId, userId),
+      fetchGuildRoles(guildId),
+      prisma.supportTeam.findMany({
+        where: { guildId },
+        select: {
+          id: true,
+          roles: {
+            select: {
+              roleId: true
+            }
           }
         }
-      }
-    })
-  ]);
+      })
+    ]);
+  } catch (error) {
+    console.warn("[transcripts] Failed to resolve hierarchy access; returning no accessible teams", {
+      guildId,
+      userId,
+      message: error instanceof Error ? error.message : "unknown_error"
+    });
+    return new Set<string>();
+  }
 
   if (!member) {
     return new Set<string>();
