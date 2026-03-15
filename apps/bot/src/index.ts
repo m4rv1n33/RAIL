@@ -1209,6 +1209,15 @@ const buildCloseRequestButtons = (ticketId: string, disabled = false) => {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(accept, deny);
 };
 
+const isTicketAutocloseExcluded = async (ticketId: string) => {
+  const latest = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: { in: ["AUTOCLOSE_EXCLUDE", "AUTOCLOSE_INCLUDE"] } },
+    orderBy: { createdAt: "desc" },
+    select: { type: true }
+  });
+  return latest?.type === "AUTOCLOSE_EXCLUDE";
+};
+
 const applyClaimedPermissions = async (ticketId: string, claimedById: string) => {
   const ticket = await prisma.ticket.findFirst({
     where: { id: ticketId },
@@ -1720,6 +1729,14 @@ const registerCommands = async () => {
           .setName("reason")
           .setDescription("Reason for requesting closure")
           .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName("autoclose")
+      .setDescription("Manage inactivity auto-close behavior")
+      .addSubcommand((sub) =>
+        sub
+          .setName("exclude")
+          .setDescription("Exclude this ticket from inactivity auto-close")
       )
   
   ].map((command) => command.toJSON());
@@ -2582,6 +2599,49 @@ client.on("interactionCreate", async (interaction) => {
       });
       return;
     }
+
+    if (interaction.commandName === "autoclose") {
+      const subcommand = interaction.options.getSubcommand(false);
+      if (subcommand !== "exclude") {
+        await interaction.reply({ content: "Unsupported autoclose action.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+
+      const alreadyExcluded = await isTicketAutocloseExcluded(ticket.id);
+      if (alreadyExcluded) {
+        await interaction.reply({ content: "This ticket is already excluded from inactivity auto-close.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "AUTOCLOSE_EXCLUDE",
+          actorId: interaction.user.id
+        }
+      });
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { lastActivityAt: new Date() }
+      });
+
+      await interaction.reply({ content: "Auto-close exclusion enabled for this ticket." });
+      return;
+    }
   }
 
   if (interaction.isModalSubmit() && interaction.customId.startsWith("ticket-modal:")) {
@@ -3181,6 +3241,11 @@ const startInactivityMonitor = () => {
       }
     });
     for (const ticket of tickets) {
+      const excludedFromAutoclose = await isTicketAutocloseExcluded(ticket.id);
+      if (excludedFromAutoclose) {
+        continue;
+      }
+
       const last = ticket.lastActivityAt.getTime();
       if (now - last > closeMs) {
         await closeTicket(ticket.id, "system");
