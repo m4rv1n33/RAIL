@@ -144,6 +144,27 @@ Dashboard access is role based:
 - Discord administrators can access management views
 - Superuser has additional privileged actions such as force close and delete all transcripts
 
+## Recent Updates
+
+- Added ticket participant management commands:
+	- `/add account:<user>`
+	- `/remove account:<user>` or `/remove role:<role>`
+- Added force unclaim command:
+	- `/forceunclaim` (superusers and Discord administrators only)
+- Added inactivity override command:
+	- `/autoclose exclude` to exempt a ticket from inactivity warning/auto-close checks
+- Added ticket creation blacklist support for role `1478457037607403610`
+- Added transcript access filtering by support-team role hierarchy
+- Added configurable claimer bypass roles (dashboard settings)
+- Improved mobile OAuth reliability with signed auth-token fallback in addition to session/cookie auth
+
+## Dashboard Settings
+
+Guild settings now include:
+- `transcriptChannelId`
+- `mediaForumChannelId`
+- `claimerBypassRoleIds` (roles that can manage claimed tickets without being the claimer)
+
 ## Logging relay
 
 API, bot, and dashboard Vite relay follow this order:

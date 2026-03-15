@@ -1,6 +1,6 @@
 # RAIL Ticketing System - Terms and Conditions
 
-_Last updated: March 3, 2026_
+_Last updated: March 15, 2026_
 
 ## 1) Acceptance of Terms
 By using the UKRRP Ticket System Discord bot, dashboard, or related services, you agree to these Terms and Conditions.
@@ -42,6 +42,7 @@ To operate correctly, the system may collect and process the following data:
 ### F) Authentication and Session Data
 - Dashboard login/session data required for authenticated access
 - Discord OAuth-related account/session context handled by the API service
+- Signed authentication token data used as a fallback for mobile/cross-site login continuity
 
 ### G) Operational Logs
 The system stores operational logs for reliability and debugging. These logs can include:
@@ -66,6 +67,11 @@ Data is retained as needed for ticket operations, auditing, and support workflow
 
 ## 7) Security and Access
 Access is controlled through Discord authentication, configured role checks, and internal service secrets for API↔bot communication. You are responsible for securing your Discord account and any administrator/superuser credentials.
+
+Additional access behavior currently in use includes:
+- Transcript visibility rules based on support-team role hierarchy
+- Configurable claimer-bypass roles for claimed ticket management
+- Ticket inactivity auto-close exclusions set explicitly by authorized staff actions
 
 ## 8) Prohibited Use
 You agree not to misuse the system, bypass access controls, or use the service for unlawful, abusive, or unauthorized activity.
