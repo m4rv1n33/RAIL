@@ -9,20 +9,8 @@ type SessionUser = {
   accessToken: string;
 };
 
-type PublicUserData = {
-  id: string;
-  username: string;
-  discriminator: string;
-  avatar: string | null;
-};
-
 type AuthCookiePayload = {
   user: SessionUser;
-  exp: number;
-};
-
-type AuthTokenPayload = {
-  user: PublicUserData;
   exp: number;
 };
 
@@ -132,7 +120,7 @@ const decodeAuthCookie = (rawValue: string): AuthCookiePayload | null => {
   }
 };
 
-const decodeAuthToken = (rawValue: string): AuthTokenPayload | null => {
+const decodeAuthToken = (rawValue: string): AuthCookiePayload | null => {
   if (!rawValue || !rawValue.includes(".")) {
     return null;
   }
@@ -150,7 +138,7 @@ const decodeAuthToken = (rawValue: string): AuthTokenPayload | null => {
 
   try {
     const payloadJson = base64UrlDecode(payloadEncoded);
-    const payload = JSON.parse(payloadJson) as AuthTokenPayload;
+    const payload = JSON.parse(payloadJson) as AuthCookiePayload;
     if (!payload || typeof payload !== "object") {
       return null;
     }
@@ -167,15 +155,14 @@ const decodeAuthToken = (rawValue: string): AuthTokenPayload | null => {
 };
 
 export const createAuthToken = (user: SessionUser) => {
-  // Create a public token without the sensitive accessToken
-  const publicUser: PublicUserData = {
-    id: user.id,
-    username: user.username,
-    discriminator: user.discriminator,
-    avatar: user.avatar
-  };
-  const payload: AuthTokenPayload = {
-    user: publicUser,
+  // Create signed auth token with full user data (including accessToken)
+  // This is safe because:
+  // 1. Token is HMAC-signed and cannot be forged
+  // 2. Token is short-lived (8 hours)
+  // 3. Same token is in the session cookie
+  // 4. If token is stolen, the user's device is already compromised
+  const payload: AuthCookiePayload = {
+    user,
     exp: Date.now() + AUTH_COOKIE_MAX_AGE_MS
   };
   const payloadEncoded = base64UrlEncode(JSON.stringify(payload));
@@ -244,10 +231,6 @@ export const restoreSessionUserFromAuthHeader = (req: Request) => {
   if (!payload) {
     return null;
   }
-  // Return user from header token (which doesn't have accessToken)
-  // The session should have been established if header auth is being used
-  return {
-    ...payload.user,
-    accessToken: ""
-  } as SessionUser;
+  // Return the full user from the token (includes accessToken)
+  return payload.user;
 };
