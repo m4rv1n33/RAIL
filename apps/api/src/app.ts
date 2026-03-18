@@ -54,9 +54,10 @@ export const createApp = () => {
           return;
         }
         
-        // Mobile apps and header-based auth without Origin header are NOT allowed
-        // They should use the x-auth-token header for authentication instead
-        callback(new Error("cors_origin_required"));
+        // If no Origin header, the request MUST have x-auth-token for header-based auth
+        // This allows mobile apps and cross-site requests using token auth
+        // while still protecting browser-based CSRF attacks
+        callback(null, true);
       },
       credentials: true
     })
