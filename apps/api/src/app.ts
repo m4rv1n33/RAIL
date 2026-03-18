@@ -12,7 +12,12 @@ import { transcriptsRouter } from "./routes/transcripts.js";
 export const createApp = () => {
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
-  const sessionSecret = String(process.env.SESSION_SECRET || "ukrrp-dev-session-secret");
+  const sessionSecret = String(process.env.SESSION_SECRET || "");
+  
+  if (!sessionSecret) {
+    throw new Error("SESSION_SECRET environment variable is required");
+  }
+  
   const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, "");
   const dashboardOrigin = normalizeOrigin(String(process.env.DASHBOARD_ORIGIN || ""));
   const extraOrigins = String(process.env.DASHBOARD_ORIGINS || "")
@@ -38,16 +43,20 @@ export const createApp = () => {
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (!origin) {
-          callback(null, true);
+        // Allow requests with valid Origin header
+        if (origin) {
+          const normalizedOrigin = normalizeOrigin(origin);
+          if (allowedOrigins.has(normalizedOrigin)) {
+            callback(null, true);
+            return;
+          }
+          callback(new Error("cors_origin_not_allowed"));
           return;
         }
-        const normalizedOrigin = normalizeOrigin(origin);
-        if (allowedOrigins.has(normalizedOrigin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error("cors_origin_not_allowed"));
+        
+        // Mobile apps and header-based auth without Origin header are NOT allowed
+        // They should use the x-auth-token header for authentication instead
+        callback(new Error("cors_origin_required"));
       },
       credentials: true
     })

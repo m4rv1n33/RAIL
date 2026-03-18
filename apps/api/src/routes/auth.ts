@@ -2,6 +2,7 @@ import { Router } from "express";
 import { exchangeCode, fetchDiscordUser } from "../services/discord.js";
 import { isConfiguredSuperuser } from "../utils/superuser.js";
 import { evaluateAccess } from "../middleware/auth.js";
+import { createOAuthRateLimiter, createCallbackRateLimiter } from "../middleware/rateLimit.js";
 import {
   clearAuthCookie,
   createAuthToken,
@@ -11,6 +12,9 @@ import {
 } from "../utils/authCookie.js";
 
 export const authRouter = Router();
+
+const oauthRateLimiter = createOAuthRateLimiter();
+const callbackRateLimiter = createCallbackRateLimiter();
 
 authRouter.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -48,7 +52,7 @@ const sanitizeReturnTo = (candidate: string) => {
   }
 };
 
-authRouter.get("/login", (req, res) => {
+authRouter.get("/login", oauthRateLimiter, (req, res) => {
   const requestedReturnTo = sanitizeReturnTo(String(req.query.return_to || ""));
   const fallbackReturnTo = sanitizeReturnTo(String(process.env.DASHBOARD_ORIGIN || ""));
   const returnTo = requestedReturnTo || fallbackReturnTo || "/";
@@ -63,7 +67,7 @@ authRouter.get("/login", (req, res) => {
   res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
 });
 
-authRouter.get("/callback", async (req, res) => {
+authRouter.get("/callback", callbackRateLimiter, async (req, res) => {
   const code = String(req.query.code || "");
   if (!code) {
     res.status(400).json({ error: "missing_code" });
@@ -111,36 +115,11 @@ authRouter.get("/callback", async (req, res) => {
 });
 
 authRouter.get("/me", async (req, res) => {
-  const authCookieName = process.env.AUTH_COOKIE_NAME || "ukrrp_auth";
-  const hadSessionBefore = Boolean(req.session.user);
-  const hasAuthCookie = String(req.headers.cookie || "").includes(`${authCookieName}=`);
-  const hasAuthHeader = Boolean(req.headers["x-auth-token"]);
-
   const fromCookie = restoreSessionUserFromAuthCookie(req);
   const fromHeader = fromCookie ? null : restoreSessionUserFromAuthHeader(req);
   const user = fromCookie || fromHeader || null;
-  const authSource = hadSessionBefore
-    ? "session"
-    : fromCookie
-      ? "cookie"
-      : fromHeader
-        ? "header"
-        : "none";
-
-  res.setHeader("x-auth-debug-source", authSource);
-  res.setHeader("x-auth-debug-had-session", hadSessionBefore ? "1" : "0");
-  res.setHeader("x-auth-debug-has-cookie", hasAuthCookie ? "1" : "0");
-  res.setHeader("x-auth-debug-has-header", hasAuthHeader ? "1" : "0");
 
   if (!user) {
-    console.info("[auth-debug] /auth/me resolved unauthenticated", {
-      authSource,
-      hadSessionBefore,
-      hasAuthCookie,
-      hasAuthHeader,
-      guildId: String(req.headers["x-guild-id"] || ""),
-      userAgent: String(req.headers["user-agent"] || "")
-    });
     res.json({ user: null });
     return;
   }
@@ -151,29 +130,11 @@ authRouter.get("/me", async (req, res) => {
   if (guildId) {
     const access = await evaluateAccess(req, res);
     if (!access) {
-      console.info("[auth-debug] /auth/me evaluateAccess returned null", {
-        authSource,
-        userId: user.id,
-        guildId,
-        userAgent: String(req.headers["user-agent"] || "")
-      });
       return;
     }
     canAccessDashboard = access.isSuperuser || access.isAdmin || access.hasManagementRole || access.hasStaffRole;
     canManage = access.isSuperuser || access.isAdmin || access.hasManagementRole;
   }
-
-  console.info("[auth-debug] /auth/me resolved authenticated", {
-    authSource,
-    userId: user.id,
-    guildId,
-    canAccessDashboard,
-    canManage,
-    hasAuthCookie,
-    hasAuthHeader,
-    hadSessionBefore,
-    userAgent: String(req.headers["user-agent"] || "")
-  });
 
   res.json({
     user: {

@@ -9,15 +9,33 @@ type SessionUser = {
   accessToken: string;
 };
 
+type PublicUserData = {
+  id: string;
+  username: string;
+  discriminator: string;
+  avatar: string | null;
+};
+
 type AuthCookiePayload = {
   user: SessionUser;
+  exp: number;
+};
+
+type AuthTokenPayload = {
+  user: PublicUserData;
   exp: number;
 };
 
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "ukrrp_auth";
 const AUTH_COOKIE_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 
-const getSessionSecret = () => String(process.env.SESSION_SECRET || "ukrrp-dev-session-secret");
+const getSessionSecret = () => {
+  const secret = String(process.env.SESSION_SECRET || "");
+  if (!secret) {
+    throw new Error("SESSION_SECRET environment variable is required");
+  }
+  return secret;
+};
 
 const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, "");
 
@@ -114,7 +132,59 @@ const decodeAuthCookie = (rawValue: string): AuthCookiePayload | null => {
   }
 };
 
+const decodeAuthToken = (rawValue: string): AuthTokenPayload | null => {
+  if (!rawValue || !rawValue.includes(".")) {
+    return null;
+  }
+  const [payloadEncoded, signature] = rawValue.split(".");
+  if (!payloadEncoded || !signature) {
+    return null;
+  }
+
+  const expectedSignature = signValue(payloadEncoded);
+  const provided = Buffer.from(signature, "utf-8");
+  const expected = Buffer.from(expectedSignature, "utf-8");
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    return null;
+  }
+
+  try {
+    const payloadJson = base64UrlDecode(payloadEncoded);
+    const payload = JSON.parse(payloadJson) as AuthTokenPayload;
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    if (!payload.user || typeof payload.exp !== "number") {
+      return null;
+    }
+    if (Date.now() > payload.exp) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
 export const createAuthToken = (user: SessionUser) => {
+  // Create a public token without the sensitive accessToken
+  const publicUser: PublicUserData = {
+    id: user.id,
+    username: user.username,
+    discriminator: user.discriminator,
+    avatar: user.avatar
+  };
+  const payload: AuthTokenPayload = {
+    user: publicUser,
+    exp: Date.now() + AUTH_COOKIE_MAX_AGE_MS
+  };
+  const payloadEncoded = base64UrlEncode(JSON.stringify(payload));
+  const signature = signValue(payloadEncoded);
+  return `${payloadEncoded}.${signature}`;
+};
+
+const createAuthCookie = (user: SessionUser) => {
+  // Auth cookie includes the full user with accessToken (httpOnly)
   const payload: AuthCookiePayload = {
     user,
     exp: Date.now() + AUTH_COOKIE_MAX_AGE_MS
@@ -124,10 +194,8 @@ export const createAuthToken = (user: SessionUser) => {
   return `${payloadEncoded}.${signature}`;
 };
 
-const decodeAuthToken = (rawValue: string) => decodeAuthCookie(rawValue);
-
 export const setAuthCookie = (res: Response, user: SessionUser) => {
-  const value = createAuthToken(user);
+  const value = createAuthCookie(user);
   const { secure, sameSite } = getCookieSecurityOptions();
   res.cookie(AUTH_COOKIE_NAME, value, {
     httpOnly: true,
@@ -176,6 +244,10 @@ export const restoreSessionUserFromAuthHeader = (req: Request) => {
   if (!payload) {
     return null;
   }
-  req.session.user = payload.user;
-  return payload.user;
+  // Return user from header token (which doesn't have accessToken)
+  // The session should have been established if header auth is being used
+  return {
+    ...payload.user,
+    accessToken: ""
+  } as SessionUser;
 };

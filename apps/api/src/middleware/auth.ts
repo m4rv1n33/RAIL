@@ -16,22 +16,9 @@ declare module "express-session" {
 }
 
 export const requireSession = (req: Request, res: Response, next: NextFunction) => {
-  const authCookieName = process.env.AUTH_COOKIE_NAME || "ukrrp_auth";
-  const hadSessionBefore = Boolean(req.session.user);
-  const hasAuthCookie = String(req.headers.cookie || "").includes(`${authCookieName}=`);
-  const hasAuthHeader = Boolean(req.headers["x-auth-token"]);
-
   restoreSessionUserFromAuthCookie(req);
   restoreSessionUserFromAuthHeader(req);
   if (!req.session.user) {
-    console.warn("[auth-debug] requireSession unauthorized", {
-      method: req.method,
-      path: req.originalUrl,
-      hadSessionBefore,
-      hasAuthCookie,
-      hasAuthHeader,
-      userAgent: String(req.headers["user-agent"] || "")
-    });
     res.status(401).json({ error: "unauthorized" });
     return;
   }
@@ -104,27 +91,8 @@ export const evaluateAccess = async (req: Request, res: Response): Promise<Acces
         res.status(401).json({ error: "reauth_required" });
         return null;
       }
-      if (message === "bot_token_missing" || message === "bot_auth_failed" || message === "bot_missing_access") {
-        if (oauthAdmin) {
-          return {
-            isSuperuser: false,
-            isAdmin: true,
-            hasStaffRole: false,
-            hasManagementRole: false
-          };
-        }
-        res.status(500).json({ error: "discord_lookup_unavailable" });
-        return null;
-      }
-      if (oauthAdmin) {
-        return {
-          isSuperuser: false,
-          isAdmin: true,
-          hasStaffRole: false,
-          hasManagementRole: false
-        };
-      }
-      res.status(502).json({ error: "discord_lookup_failed" });
+      // Generic error - don't leak system details
+      res.status(500).json({ error: "access_check_failed" });
       return null;
     }
   }
@@ -141,6 +109,49 @@ export const evaluateAccess = async (req: Request, res: Response): Promise<Acces
     hasStaffRole: memberRoleSet.has(STAFF_TRANSCRIPTS_ROLE_ID),
     hasManagementRole: [...MANAGEMENT_ROLE_IDS].some((roleId) => memberRoleSet.has(roleId))
   };
+};
+
+export const validateGuildMembership = async (req: Request, res: Response): Promise<boolean> => {
+  const user = restoreSessionUserFromAuthCookie(req) || restoreSessionUserFromAuthHeader(req) || req.session.user;
+  const guildId = String(req.headers["x-guild-id"] || "");
+
+  if (!user || !guildId) {
+    res.status(401).json({ error: "unauthorized" });
+    return false;
+  }
+
+  // Superusers always have valid membership
+  if (isConfiguredSuperuser(user.id)) {
+    return true;
+  }
+
+  // Verify user is actually in the guild via bot token
+  try {
+    const member = await fetchGuildMember(guildId, user.id);
+    if (member) {
+      return true;
+    }
+  } catch (error) {
+    // Fallback to OAuth verification
+  }
+
+  // Fallback: verify via user's OAuth token
+  try {
+    const member = await fetchCurrentUserGuildMember(user.accessToken, guildId);
+    if (member) {
+      return true;
+    }
+  } catch (oauthError) {
+    const oauthMessage = oauthError instanceof Error ? oauthError.message : "unknown";
+    if (oauthMessage === "user_token_invalid" || oauthMessage === "oauth_scope_missing") {
+      res.status(401).json({ error: "reauth_required" });
+      return false;
+    }
+  }
+
+  // User is not in the guild
+  res.status(403).json({ error: "not_in_guild" });
+  return false;
 };
 
 export const requireDashboardAccess = async (req: Request, res: Response, next: NextFunction) => {
