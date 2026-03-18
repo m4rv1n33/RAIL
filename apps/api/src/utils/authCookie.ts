@@ -231,6 +231,7 @@ export const restoreSessionUserFromAuthHeader = (req: Request) => {
   if (!payload) {
     return null;
   }
-  // Return the full user from the token (includes accessToken)
+  // Set session user from header token so middleware checks pass
+  req.session.user = payload.user;
   return payload.user;
 };
