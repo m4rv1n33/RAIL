@@ -106,7 +106,7 @@ export const createApp = () => {
   app.use("/settings", settingsRouter);
   app.use("/discord", discordRouter);
   app.use("/transcripts", transcriptsRouter);
-  app.use("/api/gdpr", gdprRouter);
+  app.use("/gdpr", gdprRouter);
 
   // Start GDPR retention cleanup (daily at 2 AM UTC)
   cron.schedule("0 2 * * *", () => {
