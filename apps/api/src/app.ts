@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import session from "express-session";
+import cron from "node-cron";
 import { authRouter } from "./routes/auth.js";
 import { panelsRouter } from "./routes/panels.js";
 import { categoriesRouter } from "./routes/categories.js";
@@ -8,6 +9,9 @@ import { teamsRouter } from "./routes/teams.js";
 import { settingsRouter } from "./routes/settings.js";
 import { discordRouter } from "./routes/discord.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
+import { gdprRouter } from "./routes/gdpr.js";
+import { runRetentionCleanup } from "./services/retention.js";
+import { purgeOldAuditLogs } from "./middleware/auditLog.js";
 
 export const createApp = () => {
   const app = express();
@@ -102,6 +106,21 @@ export const createApp = () => {
   app.use("/settings", settingsRouter);
   app.use("/discord", discordRouter);
   app.use("/transcripts", transcriptsRouter);
+  app.use("/api/gdpr", gdprRouter);
+
+  // Start GDPR retention cleanup (daily at 2 AM UTC)
+  cron.schedule("0 2 * * *", () => {
+    runRetentionCleanup().catch((error) => {
+      console.error("Retention cleanup failed:", error);
+    });
+  });
+
+  // Start audit log purge (weekly on Monday at 3 AM UTC)
+  cron.schedule("0 3 * * 1", () => {
+    purgeOldAuditLogs(90).catch((error) => {
+      console.error("Audit log purge failed:", error);
+    });
+  });
 
   return app;
 };

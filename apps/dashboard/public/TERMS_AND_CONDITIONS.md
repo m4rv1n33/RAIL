@@ -135,3 +135,81 @@ For urgent data protection matters or to exercise your GDPR rights, contact our 
 
 ## 15) Complaint Rights
 If you believe the Service violates your data protection rights, you have the right to lodge a complaint with your applicable supervisory authority without prejudice to any other legal remedies.
+
+---
+
+# Terms and Conditions of Service
+
+## 16) Service Availability and Disclaimer
+The UKRRP Ticket System is provided on an "AS-IS" and "AS-AVAILABLE" basis. We do not warrant that:
+- The Service will be uninterrupted or error-free
+- The Service will meet your specific requirements
+- Defects in the Service will be corrected
+
+We are not liable for any damages arising from service interruptions, bugs, or unavailability, except where prohibited by law.
+
+## 17) Limitation of Liability
+To the maximum extent permitted by law, we shall not be liable for:
+- Indirect, incidental, special, or consequential damages
+- Loss of data, revenue, profits, or business opportunities
+- Damages arising from unauthorized access, viruses, or third-party content
+- Any damages resulting from your use or inability to use the Service
+
+Our total liability shall not exceed the fees paid by you in the preceding 12 months, or if no fees were paid, shall be limited to the amount of direct damages actually suffered.
+
+## 18) Intellectual Property Rights
+- All content, features, and functionality provided by the Service (including software, code, designs, graphics) are owned by us or our licensors and protected by copyright.
+- You are granted a limited, non-exclusive, non-transferable license to use the Service for its intended purpose.
+- You may not modify, copy, distribute, transmit, or reverse-engineer any part of the Service without explicit written permission.
+- User-generated content (tickets, transcripts, messages) remains your property; we retain the right to store and process it as necessary for service operation.
+
+## 19) User Accounts and Responsibilities
+- You are responsible for maintaining the confidentiality of your Discord account and authentication credentials.
+- You are responsible for all activities under your account. You agree to notify us immediately of unauthorized access.
+- You must not use the Service for unlawful, abusive, or harmful purposes.
+- You must not attempt to gain unauthorized access to the Service or other users' accounts.
+- We reserve the right to suspend or terminate accounts that violate these terms.
+
+## 20) Third-Party Services and Links
+- The Service integrates with Discord and may link to third-party services.
+- We are not responsible for third-party services, their content, or their practices.
+- Your use of third-party services is subject to their terms and privacy policies.
+- We do not endorse third-party content and are not liable for any damage or loss caused by third-party services.
+
+## 21) Modification of Terms and Service
+- We may modify these Terms and Conditions at any time. Changes will be effective upon posting.
+- Your continued use of the Service after modifications constitutes acceptance of the revised terms.
+- We may modify, suspend, or discontinue the Service (or any feature) at any time with or without notice.
+- We are not liable for any modification or discontinuation of the Service.
+
+## 22) Indemnification
+You agree to indemnify, defend, and hold harmless us, our officers, directors, employees, and agents from any claims, damages, losses, liabilities, or costs (including legal fees) arising from:
+- Your violation of these Terms and Conditions
+- Your violation of applicable law
+- Your misuse of the Service
+- Your violation of third-party rights
+- Content you upload or transmit through the Service
+
+## 23) Termination
+- You may terminate your use of the Service at any time by discontinuing access.
+- We may terminate or suspend your access immediately if you violate these Terms and Conditions or engage in unlawful activity.
+- Upon termination, your license to use the Service ends. Articles that should survive termination (limitation of liability, indemnification, etc.) remain in effect.
+
+## 24) Dispute Resolution and Governing Law
+- These Terms and Conditions shall be governed by and construed in accordance with applicable law, without regard to conflict of law principles.
+- Any disputes arising from these Terms or the Service shall be resolved through good-faith negotiation or informal dispute resolution.
+- If negotiation fails, disputes shall be subject to the exclusive jurisdiction of the competent courts in the applicable jurisdiction.
+- You agree not to initiate any class action or collective claim against us.
+
+## 25) Severability
+If any provision of these Terms and Conditions is found to be invalid or unenforceable, the remaining provisions shall continue in full force and effect. The invalid provision shall be modified to the minimum extent necessary to make it valid.
+
+## 26) Entire Agreement
+These Terms and Conditions, along with the Privacy Notice (sections 1-15), constitute the entire agreement between you and us regarding the Service and supersede all prior agreements and understandings.
+
+## 27) Contact for Legal Matters
+For legal inquiries, terms clarifications, or formal notices:
+
+**Email:** legal@m4rv1n.dev
+
+All notices must be sent to the email address above and are considered received when delivered.

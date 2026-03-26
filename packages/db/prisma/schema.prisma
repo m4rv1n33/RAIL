@@ -87,6 +87,7 @@ model Ticket {
   lastActivityAt DateTime      @default(now())
   closeReason    String?
   closedAt       DateTime?
+  deletedAt      DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   category       TicketCategory @relation(fields: [categoryId], references: [id])
@@ -97,6 +98,7 @@ model Ticket {
   @@index([guildId])
   @@index([ownerId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model TicketEvent {
@@ -115,6 +117,65 @@ model TicketTranscript {
   id        String   @id @default(cuid())
   ticketId  String   @unique
   content   String   @db.LongText
+  deletedAt DateTime?
   createdAt DateTime @default(now())
   ticket    Ticket   @relation(fields: [ticketId], references: [id])
+
+  @@index([deletedAt])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  guildId      String?
+  action       String
+  resourceType String?
+  resourceId   String?
+  details      Json?
+  ipAddress    String?  @db.VarChar(45)
+  userAgent    String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([guildId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model UserConsent {
+  id           String   @id @default(uuid())
+  userId       String
+  guildId      String
+  consentType  String
+  granted      Boolean  @default(false)
+  grantedAt    DateTime?
+  revokedAt    DateTime?
+  ipAddress    String?  @db.VarChar(45)
+  userAgent    String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, guildId, consentType])
+  @@index([userId])
+  @@index([guildId])
+  @@index([granted])
+  @@index([createdAt])
+}
+
+model DataDeletionRequest {
+  id          String   @id @default(uuid())
+  userId      String
+  guildId     String
+  status      String   @default("pending")
+  requestedAt DateTime @default(now())
+  completedAt DateTime?
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.Text
+  reason      String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([guildId])
+  @@index([status])
+  @@index([requestedAt])
 }
