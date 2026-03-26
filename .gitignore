@@ -32,4 +32,7 @@ data/guild-settings.json
 .DS_Store
 .vscode/
 
+# Documentation (local reference only)
+docs/gdpr/
+
 testing/ 
