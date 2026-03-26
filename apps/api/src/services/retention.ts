@@ -33,12 +33,12 @@ export const deleteExpiredClosedTickets = async (): Promise<{
       },
     });
 
-    await logRetentionAction("CLOSED_TICKETS_DELETED", result.count || 0, {
+    await logRetentionAction("CLOSED_TICKETS_DELETED", (result as any).count || 0, {
       thresholdDate: thresholdDate.toISOString(),
       retentionDays: 720, // 24 months
     });
 
-    return { deletedCount: result.count || 0 };
+    return { deletedCount: (result as any).count || 0 };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";
     console.error("[retention] Failed to delete expired closed tickets:", message);
@@ -70,9 +70,9 @@ export const deleteOrphanedTranscripts = async (): Promise<{
       },
     });
 
-    await logRetentionAction("ORPHANED_TRANSCRIPTS_DELETED", result.count || 0);
+    await logRetentionAction("ORPHANED_TRANSCRIPTS_DELETED", (result as any).count || 0);
 
-    return { deletedCount: result.count || 0 };
+    return { deletedCount: (result as any).count || 0 };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";
     console.error("[retention] Failed to delete orphaned transcripts:", message);
@@ -136,18 +136,18 @@ export const softDeleteUserData = async (
     });
 
     const totalDeleted =
-      (ticketsDeleted.count || 0) +
-      (transcriptsDeleted.count || 0) +
-      (eventsDeleted.count || 0) +
-      (consentsDeleted.count || 0);
+      ((ticketsDeleted as any).count || 0) +
+      ((transcriptsDeleted as any).count || 0) +
+      ((eventsDeleted as any).count || 0) +
+      ((consentsDeleted as any).count || 0);
 
     await logRetentionAction("USER_DATA_SOFT_DELETE", totalDeleted, {
       userId,
       guildId,
-      ticketsDeleted: ticketsDeleted.count || 0,
-      transcriptsDeleted: transcriptsDeleted.count || 0,
-      eventsDeleted: eventsDeleted.count || 0,
-      consentsDeleted: consentsDeleted.count || 0,
+      ticketsDeleted: (ticketsDeleted as any).count || 0,
+      transcriptsDeleted: (transcriptsDeleted as any).count || 0,
+      eventsDeleted: (eventsDeleted as any).count || 0,
+      consentsDeleted: (consentsDeleted as any).count || 0,
     });
 
     return { success: true, deletedItemCount: totalDeleted };
@@ -188,13 +188,13 @@ export const anonymizeUserData = async (
       },
     });
 
-    const totalAnonymized = (eventsAnonymized.count || 0);
+    const totalAnonymized = ((eventsAnonymized as any).count || 0);
 
     await logRetentionAction("USER_DATA_ANONYMIZED", totalAnonymized, {
       userId,
       guildId,
       anonymousId,
-      eventsAnonymized: eventsAnonymized.count || 0,
+      eventsAnonymized: (eventsAnonymized as any).count || 0,
     });
 
     return { success: true, anonymizedItemCount: totalAnonymized };
@@ -280,8 +280,8 @@ export const runRetentionCleanup = async (): Promise<{
     };
 
     const totalDeleted =
-      (results.expiredClosedTickets.deletedCount || 0) +
-      (results.orphanedTranscripts.deletedCount || 0);
+      (results.expiredClosedTickets?.deletedCount || 0) +
+      (results.orphanedTranscripts?.deletedCount || 0);
 
     console.info(`[retention] Cleanup cycle complete: ${totalDeleted} items deleted`, results);
 

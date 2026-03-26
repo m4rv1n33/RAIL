@@ -252,7 +252,7 @@ export const exportAuditLogs = async (filters: {
 
     const csv = [
       headers.join(","),
-      ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")),
+      ...rows.map((row: string[]) => row.map((cell: string) => `"${String(cell).replace(/"/g, '""')}"`).join(",")),
     ].join("\n");
 
     return csv;

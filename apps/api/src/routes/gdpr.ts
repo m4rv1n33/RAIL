@@ -45,11 +45,11 @@ gdprRouter.get("/export", requireSession, async (req, res) => {
     });
 
     // Gather all user data
-    const [tickets, events, transcripts, guildSettings] = await Promise.all([
+    const [tickets, events, transcripts] = await Promise.all([
       prisma.ticket.findMany({
         where: {
           guildId,
-          $or: [{ ownerId: userId }, { claimedById: userId }],
+          OR: [{ ownerId: userId }, { claimedById: userId }],
         },
         include: { events: true, transcript: true },
       }),
@@ -60,9 +60,6 @@ gdprRouter.get("/export", requireSession, async (req, res) => {
         where: {
           ticket: { guildId, ownerId: userId },
         },
-      }),
-      (prisma as any).guildSettings.findFirst({
-        where: { guildId },
       }),
     ]);
 
@@ -207,7 +204,7 @@ gdprRouter.post("/delete-confirm", requireSession, async (req, res) => {
       prisma.ticket.deleteMany({
         where: {
           guildId,
-          $or: [{ ownerId: userId }, { claimedById: userId }],
+          OR: [{ ownerId: userId }, { claimedById: userId }],
         },
       }),
       (prisma as any).ticketEvent.deleteMany({
@@ -257,10 +254,10 @@ gdprRouter.post("/delete-confirm", requireSession, async (req, res) => {
       status: "completed",
       message: "User data successfully deleted",
       deletedItems: {
-        tickets: ticketsDeleted.count || 0,
-        events: eventsDeleted.count || 0,
-        transcripts: transcriptsDeleted.count || 0,
-        consents: consentsDeleted.count || 0,
+        tickets: (ticketsDeleted as any).count || 0,
+        events: (eventsDeleted as any).count || 0,
+        transcripts: (transcriptsDeleted as any).count || 0,
+        consents: (consentsDeleted as any).count || 0,
       },
     });
   } catch (error) {
