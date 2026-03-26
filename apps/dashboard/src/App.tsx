@@ -790,7 +790,7 @@ export const App = () => {
         )}
         <button className={`tab ${activeTab === "transcripts" ? "active" : ""}`} onClick={() => { setActiveTab("transcripts"); window.location.hash = "#/transcripts"; }}>Transcripts ({transcripts.length})</button>
         {user?.isSuperuser && (
-          <button className={`tab ${activeTab === "gdpr-admin" ? "active" : ""}`} onClick={() => { setActiveTab("gdpr-admin"); window.location.hash = "#/gdpr-admin"; }}>🔴 GDPR Admin</button>
+          <button className={`tab ${activeTab === "gdpr-admin" ? "active" : ""}`} onClick={() => { setActiveTab("gdpr-admin"); window.location.hash = "#/gdpr-admin"; }}>GDPR Admin</button>
         )}
       </div>
 
@@ -1169,7 +1169,7 @@ export const App = () => {
 
       {user?.isSuperuser && activeTab === "gdpr-admin" && (
         <section className="card">
-          <h2>🔴 GDPR Admin Tools (Superuser Only)</h2>
+          <h2>GDPR Admin Tools (Superuser Only)</h2>
           <p className="muted">Manage user data for GDPR compliance. All actions are logged and audited.</p>
           
           <div className="actions" style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
@@ -1191,7 +1191,7 @@ export const App = () => {
                 }
               }}
             >
-              📋 Article 15: View User Data
+              Article 15: View User Data
             </button>
             
             <button
@@ -1219,7 +1219,7 @@ export const App = () => {
                 }
               }}
             >
-              📦 Article 20: Export User Data (Portability)
+              Article 20: Export User Data (Portability)
             </button>
             
             <button
@@ -1251,7 +1251,7 @@ export const App = () => {
                 }
               }}
             >
-              ✏️ Article 16: Rectify User Data
+              Article 16: Rectify User Data
             </button>
             
             <button
@@ -1283,18 +1283,18 @@ export const App = () => {
                 }
               }}
             >
-              🚫 Article 18: Restrict Processing
+              Article 18: Restrict Processing
             </button>
             
             <button
               className="button danger"
               disabled={busy}
               onClick={async () => {
-                const userId = prompt("⚠️ DESTRUCTIVE: Enter user ID to permanently delete all data:");
+                const userId = prompt("DESTRUCTIVE: Enter user ID to permanently delete all data:");
                 if (!userId) return;
                 const reason = prompt("Enter reason for erasure:") || "Admin-initiated erasure";
                 
-                if (!window.confirm(`⚠️ THIS WILL PERMANENTLY DELETE ALL DATA FOR USER ${userId}\n\nThis cannot be undone!\n\nContinue?`)) return;
+                if (!window.confirm(`THIS WILL PERMANENTLY DELETE ALL DATA FOR USER ${userId}\n\nThis cannot be undone!\n\nContinue?`)) return;
                 
                 const confirmed = prompt(`Type DELETE_THIS_USER_DATA to confirm deletion of ${userId}:`);
                 if (confirmed !== "DELETE_THIS_USER_DATA") {
@@ -1309,7 +1309,7 @@ export const App = () => {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ confirmDeletion: "DELETE_THIS_USER_DATA", reason }),
                   });
-                  alert(`✓ User data permanently deleted!\nDeletion ID: ${result.deletionId}\nDeleted: ${result.deletedItems.tickets} tickets, ${result.deletedItems.events} events, ${result.deletedItems.transcripts} transcripts`);
+                  alert(`User data permanently deleted!\nDeletion ID: ${result.deletionId}\nDeleted: ${result.deletedItems.tickets} tickets, ${result.deletedItems.events} events, ${result.deletedItems.transcripts} transcripts`);
                   console.log("Deletion result:", result);
                 } catch (error) {
                   notifyErrorOnce(getErrorMessage(error, "Failed to delete user data"));
@@ -1318,12 +1318,12 @@ export const App = () => {
                 }
               }}
             >
-              💀 Article 17: Delete User Data (Erasure)
+              Article 17: Delete User Data (Erasure)
             </button>
           </div>
           
           <div style={{ marginTop: "2rem", padding: "1rem", backgroundColor: "rgba(255,0,0,0.05)", borderRadius: "4px" }}>
-            <h3>⚠️ Important</h3>
+            <h3>! Important</h3>
             <ul>
               <li>All operations are fully audited and logged</li>
               <li>Deletion is permanent and cannot be reversed</li>
