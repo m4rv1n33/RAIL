@@ -134,7 +134,7 @@ export const App = () => {
   const [roles, setRoles] = useState<DiscordRole[]>([]);
   const [settings, setSettings] = useState<GuildSettings>({});
   const [transcripts, setTranscripts] = useState<TranscriptSummary[]>([]);
-  const [activeTab, setActiveTab] = useState<"teams" | "categories" | "panels" | "transcripts">("teams");
+  const [activeTab, setActiveTab] = useState<"teams" | "categories" | "panels" | "transcripts" | "gdpr-admin">("teams");
   const [busy, setBusy] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash || "");
   const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
@@ -789,6 +789,9 @@ export const App = () => {
           </>
         )}
         <button className={`tab ${activeTab === "transcripts" ? "active" : ""}`} onClick={() => { setActiveTab("transcripts"); window.location.hash = "#/transcripts"; }}>Transcripts ({transcripts.length})</button>
+        {user?.isSuperuser && (
+          <button className={`tab ${activeTab === "gdpr-admin" ? "active" : ""}`} onClick={() => { setActiveTab("gdpr-admin"); window.location.hash = "#/gdpr-admin"; }}>🔴 GDPR Admin</button>
+        )}
       </div>
 
       {user.canManage && activeTab === "teams" && (
@@ -1163,7 +1166,173 @@ export const App = () => {
           )}
         </section>
       )}
-      <footer className="brand-footer">{brandingFooter}</footer>
+
+      {user?.isSuperuser && activeTab === "gdpr-admin" && (
+        <section className="card">
+          <h2>🔴 GDPR Admin Tools (Superuser Only)</h2>
+          <p className="muted">Manage user data for GDPR compliance. All actions are logged and audited.</p>
+          
+          <div className="actions" style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to access their data:");
+                if (!userId) return;
+                setBusy(true);
+                try {
+                  const data = await apiFetch(`/gdpr/admin/user-data/${encodeURIComponent(userId)}`, { method: "GET" });
+                  alert(`Data retrieved for ${data.targetUserId}:\n\nTickets: ${data.summary.totalTickets}\nEvents: ${data.summary.totalEvents}\nTranscripts: ${data.summary.totalTranscripts}\nConsents: ${data.summary.activeConsents}\n\nCheck console for full data.`);
+                  console.log("User Data:", data);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to retrieve user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              📋 Article 15: View User Data
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to export their data:");
+                if (!userId) return;
+                setBusy(true);
+                try {
+                  const data = await apiFetch(`/gdpr/admin/export/${encodeURIComponent(userId)}`, { method: "GET" });
+                  const json = JSON.stringify(data, null, 2);
+                  const blob = new Blob([json], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `user-${userId}-gdpr-export-${new Date().toISOString().split("T")[0]}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  alert(`Export complete for ${userId}. File downloaded.`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to export user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              📦 Article 20: Export User Data (Portability)
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to rectify:");
+                if (!userId) return;
+                const fieldPath = prompt("Enter field path to rectify (e.g., username):");
+                if (!fieldPath) return;
+                const newValue = prompt("Enter new value:");
+                if (newValue === null) return;
+                const reason = prompt("Enter reason for rectification:") || "Admin rectification";
+                
+                if (!window.confirm(`Rectify ${fieldPath} for user ${userId}?`)) return;
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch("/gdpr/admin/rectify", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ targetUserId: userId, fieldPath, newValue, reason }),
+                  });
+                  alert(`Rectification recorded: ${result.rectificationId}\nField: ${result.field}\nManually verify and apply changes to backend systems.`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to rectify user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              ✏️ Article 16: Rectify User Data
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to restrict processing:");
+                if (!userId) return;
+                const types = ["marketing", "profiling", "automated_decision_making", "data_sharing", "all"];
+                let restrictionType = prompt(`Enter restriction type.\nValid options: ${types.join(", ")}`);
+                if (!restrictionType || !types.includes(restrictionType)) {
+                  alert("Invalid restriction type");
+                  return;
+                }
+                const reason = prompt("Enter reason:") || "Admin-initiated restriction";
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch("/gdpr/admin/restrict-processing", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ targetUserId: userId, restrictionType, reason }),
+                  });
+                  alert(`Processing restricted for user ${result.appliedTo}\nType: ${result.restrictionType}\nRestriction ID: ${result.restrictionId}`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to restrict processing"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              🚫 Article 18: Restrict Processing
+            </button>
+            
+            <button
+              className="button danger"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("⚠️ DESTRUCTIVE: Enter user ID to permanently delete all data:");
+                if (!userId) return;
+                const reason = prompt("Enter reason for erasure:") || "Admin-initiated erasure";
+                
+                if (!window.confirm(`⚠️ THIS WILL PERMANENTLY DELETE ALL DATA FOR USER ${userId}\n\nThis cannot be undone!\n\nContinue?`)) return;
+                
+                const confirmed = prompt(`Type DELETE_THIS_USER_DATA to confirm deletion of ${userId}:`);
+                if (confirmed !== "DELETE_THIS_USER_DATA") {
+                  alert("Deletion cancelled.");
+                  return;
+                }
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch(`/gdpr/admin/delete-user-data/${encodeURIComponent(userId)}`, {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ confirmDeletion: "DELETE_THIS_USER_DATA", reason }),
+                  });
+                  alert(`✓ User data permanently deleted!\nDeletion ID: ${result.deletionId}\nDeleted: ${result.deletedItems.tickets} tickets, ${result.deletedItems.events} events, ${result.deletedItems.transcripts} transcripts`);
+                  console.log("Deletion result:", result);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to delete user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              💀 Article 17: Delete User Data (Erasure)
+            </button>
+          </div>
+          
+          <div style={{ marginTop: "2rem", padding: "1rem", backgroundColor: "rgba(255,0,0,0.05)", borderRadius: "4px" }}>
+            <h3>⚠️ Important</h3>
+            <ul>
+              <li>All operations are fully audited and logged</li>
+              <li>Deletion is permanent and cannot be reversed</li>
+              <li>Rectification changes must be manually verified</li>
+              <li>Use with care - these are destructive operations</li>
+            </ul>
+          </div>
+        </section>
+      )}
     </div>
   );
 };
