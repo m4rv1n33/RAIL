@@ -1169,7 +1169,7 @@ export const App = () => {
 
       {user?.isSuperuser && activeTab === "gdpr-admin" && (
         <section className="card">
-          <h2>GDPR Admin Tools (Superuser Only)</h2>
+          <h2>GDPR Admin Tools</h2>
           <p className="muted">Manage user data for GDPR compliance. All actions are logged and audited.</p>
           
           <div className="actions" style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
@@ -1323,7 +1323,7 @@ export const App = () => {
           </div>
           
           <div style={{ marginTop: "2rem", padding: "1rem", backgroundColor: "rgba(255,0,0,0.05)", borderRadius: "4px" }}>
-            <h3>! Important</h3>
+            <h3>⚠️ Important</h3>
             <ul>
               <li>All operations are fully audited and logged</li>
               <li>Deletion is permanent and cannot be reversed</li>
