@@ -100,7 +100,7 @@ export const softDeleteUserData = async (
     const ticketsDeleted = await prisma.ticket.updateMany({
       where: {
         guildId,
-        $or: [{ ownerId: userId }, { claimedById: userId }],
+        OR: [{ ownerId: userId }, { claimedById: userId }],
       },
       data: {
         deletedAt: deletionTimestamp,
