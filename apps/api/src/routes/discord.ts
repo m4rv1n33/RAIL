@@ -1,10 +1,17 @@
 import { Router } from "express";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 import { fetchGuildChannels, fetchGuildRoles } from "../services/discord.js";
 
 export const discordRouter = Router();
 
-discordRouter.get("/channels", requireSession, requireStaff, async (req, res) => {
+const toDiscordColorHex = (color?: number) => {
+  if (typeof color !== "number" || color <= 0) {
+    return null;
+  }
+  return `#${color.toString(16).padStart(6, "0")}`;
+};
+
+discordRouter.get("/channels", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   if (!guildId) {
     res.status(400).json({ error: "guild_id_missing" });
@@ -13,7 +20,7 @@ discordRouter.get("/channels", requireSession, requireStaff, async (req, res) =>
   try {
     const channels = await fetchGuildChannels(guildId);
     const normalized = channels
-      .filter((channel) => [0, 4, 5].includes(channel.type))
+      .filter((channel) => [0, 4, 5, 15].includes(channel.type))
       .map((channel) => ({
         id: channel.id,
         name: channel.name,
@@ -40,7 +47,7 @@ discordRouter.get("/channels", requireSession, requireStaff, async (req, res) =>
   }
 });
 
-discordRouter.get("/roles", requireSession, requireStaff, async (req, res) => {
+discordRouter.get("/roles", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   if (!guildId) {
     res.status(400).json({ error: "guild_id_missing" });
@@ -55,7 +62,8 @@ discordRouter.get("/roles", requireSession, requireStaff, async (req, res) => {
         id: role.id,
         name: role.name,
         position: role.position,
-        managed: Boolean(role.managed)
+        managed: Boolean(role.managed),
+        colorHex: toDiscordColorHex(role.color)
       }));
     res.json({ roles: normalized });
   } catch (error) {
@@ -76,3 +84,4 @@ discordRouter.get("/roles", requireSession, requireStaff, async (req, res) => {
     res.status(502).json({ error: "discord_role_lookup_failed" });
   }
 });
+

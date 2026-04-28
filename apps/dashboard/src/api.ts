@@ -1,5 +1,6 @@
 const apiBase = import.meta.env.VITE_API_BASE as string;
 const guildId = import.meta.env.VITE_GUILD_ID as string;
+const authTokenStorageKey = "RAIL-dashboard-auth-token";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -9,10 +10,14 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
     try {
       const response = await fetch(`${apiBase}${path}`, {
         ...options,
+        cache: "no-store",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "x-guild-id": guildId,
+          ...(typeof window !== "undefined" && window.localStorage.getItem(authTokenStorageKey)
+            ? { "x-auth-token": window.localStorage.getItem(authTokenStorageKey) as string }
+            : {}),
           ...(options.headers || {})
         }
       });
@@ -28,6 +33,9 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
           } else if (body?.error === "category_in_use") {
             details = "Category cannot be deleted because tickets still reference it.";
           } else if (body?.error === "reauth_required") {
+            if (typeof window !== "undefined") {
+              window.localStorage.removeItem(authTokenStorageKey);
+            }
             details = "Session needs re-authorization. Please log out and sign in again.";
           } else if (body?.error === "bot_auth_failed") {
             details = "API cannot verify guild membership because DISCORD_BOT_TOKEN is missing or invalid in the API environment.";
@@ -39,10 +47,18 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
             details = "Discord member lookup failed. Please try again in a moment.";
           } else if (body?.error === "discord_role_lookup_failed") {
             details = "Discord role lookup failed. Please check bot permissions and try again.";
+          } else if (body?.error === "staff_required") {
+            details = "You do not have access to this dashboard for the configured guild.";
+          } else if (body?.error === "admin_required") {
+            details = "You can view transcripts, but only management roles or administrators can access teams, categories, and panels.";
           } else if (body?.error === "superuser_only") {
             details = "Only the superuser account can delete all transcripts.";
           } else if (body?.error === "bot_internal_missing") {
             details = "Bot internal API is not configured. Set BOT_INTERNAL_URL and BOT_INTERNAL_SECRET in API environment.";
+          } else if (body?.error === "bot_internal_unreachable") {
+            details = "Bot internal API is unreachable. Ensure the bot service is running and BOT_INTERNAL_URL points to it.";
+          } else if (body?.error === "bot_internal_unauthorized") {
+            details = "Bot internal API rejected the request. BOT_INTERNAL_SECRET must match in API and bot environments.";
           } else if (body?.error === "bot_force_close_failed") {
             details = "Bot failed to force-close open tickets.";
           } else if (body?.error === "bot_sync_failed") {
@@ -78,3 +94,4 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
 
   throw new Error("Request failed");
 };
+

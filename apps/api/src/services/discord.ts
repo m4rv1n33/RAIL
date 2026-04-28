@@ -1,4 +1,18 @@
 const apiBase = "https://discord.com/api";
+const REQUEST_TIMEOUT_MS = 10000; // 10 seconds
+
+const createFetchWithTimeout = () => {
+  return (url: string, options: RequestInit = {}) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    
+    return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+      clearTimeout(timeout);
+    });
+  };
+};
+
+const fetchWithTimeout = createFetchWithTimeout();
 
 export const exchangeCode = async (code: string) => {
   const params = new URLSearchParams();
@@ -8,7 +22,7 @@ export const exchangeCode = async (code: string) => {
   params.set("code", code);
   params.set("redirect_uri", process.env.DISCORD_REDIRECT_URI || "");
 
-  const response = await fetch(`${apiBase}/oauth2/token`, {
+  const response = await fetchWithTimeout(`${apiBase}/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString()
@@ -20,7 +34,7 @@ export const exchangeCode = async (code: string) => {
 };
 
 export const fetchDiscordUser = async (token: string) => {
-  const response = await fetch(`${apiBase}/users/@me`, {
+  const response = await fetchWithTimeout(`${apiBase}/users/@me`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) {
@@ -34,7 +48,7 @@ export const fetchDiscordUserById = async (userId: string) => {
   if (!token) {
     throw new Error("bot_token_missing");
   }
-  const response = await fetch(`${apiBase}/users/${userId}`, {
+  const response = await fetchWithTimeout(`${apiBase}/users/${userId}`, {
     headers: { Authorization: `Bot ${token}` }
   });
   if (response.status === 404) {
@@ -51,7 +65,7 @@ export const fetchGuildMember = async (guildId: string, userId: string) => {
   if (!token) {
     throw new Error("bot_token_missing");
   }
-  const response = await fetch(`${apiBase}/guilds/${guildId}/members/${userId}`, {
+  const response = await fetchWithTimeout(`${apiBase}/guilds/${guildId}/members/${userId}`, {
     headers: { Authorization: `Bot ${token}` }
   });
   if (response.status === 401) {
@@ -73,7 +87,7 @@ export const fetchCurrentUserGuildMember = async (accessToken: string, guildId: 
   if (!accessToken) {
     throw new Error("user_token_missing");
   }
-  const response = await fetch(`${apiBase}/users/@me/guilds/${guildId}/member`, {
+  const response = await fetchWithTimeout(`${apiBase}/users/@me/guilds/${guildId}/member`, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   if (response.status === 401) {
@@ -95,7 +109,7 @@ export const fetchCurrentUserGuild = async (accessToken: string, guildId: string
   if (!accessToken) {
     throw new Error("user_token_missing");
   }
-  const response = await fetch(`${apiBase}/users/@me/guilds`, {
+  const response = await fetchWithTimeout(`${apiBase}/users/@me/guilds`, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   if (response.status === 401) {
@@ -113,7 +127,7 @@ export const fetchGuildChannels = async (guildId: string) => {
   if (!token) {
     throw new Error("bot_token_missing");
   }
-  const response = await fetch(`${apiBase}/guilds/${guildId}/channels`, {
+  const response = await fetchWithTimeout(`${apiBase}/guilds/${guildId}/channels`, {
     headers: { Authorization: `Bot ${token}` }
   });
   if (response.status === 401) {
@@ -133,7 +147,7 @@ export const fetchGuildRoles = async (guildId: string) => {
   if (!token) {
     throw new Error("bot_token_missing");
   }
-  const response = await fetch(`${apiBase}/guilds/${guildId}/roles`, {
+  const response = await fetchWithTimeout(`${apiBase}/guilds/${guildId}/roles`, {
     headers: { Authorization: `Bot ${token}` }
   });
   if (response.status === 401) {
@@ -145,5 +159,6 @@ export const fetchGuildRoles = async (guildId: string) => {
   if (!response.ok) {
     throw new Error("discord_role_lookup_failed");
   }
-  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean; permissions?: string }>>;
+  return response.json() as Promise<Array<{ id: string; name: string; position: number; managed?: boolean; permissions?: string; color?: number }>>;
 };
+

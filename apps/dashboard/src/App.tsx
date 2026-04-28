@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { marked } from "marked";
 import { apiFetch } from "./api.js";
 
-type User = { id: string; isSuperuser?: boolean };
+type User = { id: string; isSuperuser?: boolean; canAccessDashboard?: boolean; canManage?: boolean };
 type Team = {
   id: string;
   name: string;
   roles: { roleId: string }[];
 };
-type DiscordRole = { id: string; name: string; position: number; managed?: boolean };
+type DiscordRole = { id: string; name: string; position: number; managed?: boolean; colorHex?: string | null };
 type Category = {
   id: string;
   name: string;
@@ -32,7 +33,11 @@ type Panel = {
   categories: PanelCategoryLink[];
 };
 type DiscordChannel = { id: string; name: string; type: number; parentId?: string | null };
-type GuildSettings = { transcriptChannelId?: string };
+type GuildSettings = {
+  transcriptChannelId?: string;
+  mediaForumChannelId?: string;
+  claimerBypassRoleIds?: string[];
+};
 type TranscriptSummary = {
   ticketId: string;
   ticketLabel?: string;
@@ -58,8 +63,69 @@ type TranscriptDetail = {
   transcriptCreatedAt: string;
 };
 
+const THEME_STORAGE_KEY = "RAIL-dashboard-theme";
+const AUTH_TOKEN_STORAGE_KEY = "RAIL-dashboard-auth-token";
+type Theme = "dark" | "light";
+
+const getInitialTheme = (): Theme => {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return storedTheme === "light" || storedTheme === "dark" ? storedTheme : "dark";
+};
+
+const renderDiscordEmojiText = (value?: string | null) => {
+  if (!value) {
+    return value;
+  }
+  const emojiPattern = /<(a?):([A-Za-z0-9_~]+):(\d+)>/g;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = emojiPattern.exec(value)) !== null) {
+    const [fullMatch, animated, name, id] = match;
+    const matchStart = match.index;
+    if (matchStart > cursor) {
+      parts.push(value.slice(cursor, matchStart));
+    }
+    const extension = animated === "a" ? "gif" : "png";
+    parts.push(
+      <img
+        key={`${id}-${matchStart}`}
+        className="emoji-inline"
+        src={`https://cdn.discordapp.com/emojis/${id}.${extension}?size=32&quality=lossless`}
+        alt={`:${name}:`}
+        title={`:${name}:`}
+      />
+    );
+    cursor = matchStart + fullMatch.length;
+  }
+
+  if (cursor < value.length) {
+    parts.push(value.slice(cursor));
+  }
+
+  return parts.length > 0 ? parts : value;
+};
+
+const formatTicketTitle = (ticketLabel?: string, ticketId?: string) => {
+  const fallbackLabel = ticketId ? `ticket-${ticketId.slice(0, 6)}` : "";
+  const normalized = (ticketLabel || fallbackLabel).trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.toLowerCase().startsWith("ticket ")) {
+    return normalized;
+  }
+  return `Ticket ${normalized}`;
+};
+
 export const App = () => {
-  const brandingFooter = "Powered by RAIL • built by @m4rv1n_33";
+  const appName = "RAIL Ticket System";
+  const brandingFooter = "Powered by RAIL, built by @m4rv1n_33";
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [user, setUser] = useState<User | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -68,9 +134,12 @@ export const App = () => {
   const [roles, setRoles] = useState<DiscordRole[]>([]);
   const [settings, setSettings] = useState<GuildSettings>({});
   const [transcripts, setTranscripts] = useState<TranscriptSummary[]>([]);
-  const [activeTab, setActiveTab] = useState<"teams" | "categories" | "panels" | "transcripts">("teams");
+  const [activeTab, setActiveTab] = useState<"teams" | "categories" | "panels" | "transcripts" | "gdpr-admin">("teams");
   const [busy, setBusy] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash || "");
+  const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
+  const [termsMarkdown, setTermsMarkdown] = useState("");
+  const [termsLoadError, setTermsLoadError] = useState("");
 
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
@@ -86,10 +155,35 @@ export const App = () => {
   const [panelDescription, setPanelDescription] = useState("Select a category below and our team will respond.");
   const [panelChannelId, setPanelChannelId] = useState("");
   const [transcriptChannelId, setTranscriptChannelId] = useState("");
+  const [claimerBypassRoleIds, setClaimerBypassRoleIds] = useState<string[]>([]);
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptDetail | null>(null);
   const shownErrorMessagesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search || "");
+    const queryToken = searchParams.get("auth_token") || "";
+    const hashValue = window.location.hash || "";
+    const hashToken = hashValue.startsWith("#auth_token=")
+      ? decodeURIComponent(hashValue.slice("#auth_token=".length))
+      : "";
+    const token = queryToken || hashToken;
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    }
+    if (queryToken || hashToken) {
+      window.history.replaceState(null, "", window.location.pathname + "#/" );
+    }
+  }, []);
+  const loginHref = useMemo(() => {
+    const base = `${import.meta.env.VITE_API_BASE}/auth/login`;
+    if (typeof window === "undefined") {
+      return base;
+    }
+    const returnTo = `${window.location.origin}/`;
+    return `${base}?return_to=${encodeURIComponent(returnTo)}`;
+  }, []);
 
   const getErrorMessage = (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback;
@@ -117,34 +211,72 @@ export const App = () => {
     const match = routeHash.match(/^#\/transcripts\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : null;
   }, [routeHash]);
+  const isTermsRoute = useMemo(() => routePath === "/terms" || routeHash === "#/terms", [routePath, routeHash]);
+  const termsHtml = useMemo(() => {
+    if (!termsMarkdown) {
+      return "";
+    }
+    return String(marked.parse(termsMarkdown));
+  }, [termsMarkdown]);
 
   const load = async () => {
     const me = await apiFetch("/auth/me");
-    setUser(me.user || null);
-    if (!me.user) {
+    const currentUser = me.user || null;
+    setUser(currentUser);
+    if (!currentUser) {
       return;
     }
-    const [teamData, categoryData, panelData, channelData, roleData, settingsData, transcriptData] = await Promise.all([
-      apiFetch("/teams"),
-      apiFetch("/categories"),
-      apiFetch("/panels"),
-      apiFetch("/discord/channels"),
-      apiFetch("/discord/roles"),
-      apiFetch("/settings"),
-      apiFetch("/transcripts")
-    ]);
-    setTeams(teamData.teams || []);
-    setCategories(categoryData.categories || []);
-    setPanels(panelData.panels || []);
-    setChannels(channelData.channels || []);
-    setRoles(roleData.roles || []);
-    const loadedSettings = settingsData.settings || {};
-    setSettings(loadedSettings);
-    setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
+    if (!currentUser.canAccessDashboard) {
+      setTeams([]);
+      setCategories([]);
+      setPanels([]);
+      setChannels([]);
+      setRoles([]);
+      setSettings({});
+      setTranscripts([]);
+      return;
+    }
+
+    if (currentUser.canManage) {
+      const [teamData, categoryData, panelData, channelData, roleData, settingsData, transcriptData] = await Promise.all([
+        apiFetch("/teams"),
+        apiFetch("/categories"),
+        apiFetch("/panels"),
+        apiFetch("/discord/channels"),
+        apiFetch("/discord/roles"),
+        apiFetch("/settings"),
+        apiFetch("/transcripts")
+      ]);
+      setTeams(teamData.teams || []);
+      setCategories(categoryData.categories || []);
+      setPanels(panelData.panels || []);
+      setChannels(channelData.channels || []);
+      setRoles(roleData.roles || []);
+      const loadedSettings = settingsData.settings || {};
+      setSettings(loadedSettings);
+      setTranscriptChannelId(loadedSettings.transcriptChannelId || "");
+      setClaimerBypassRoleIds(Array.isArray(loadedSettings.claimerBypassRoleIds) ? loadedSettings.claimerBypassRoleIds : []);
+      setTranscripts(transcriptData.transcripts || []);
+      return;
+    }
+
+    const transcriptData = await apiFetch("/transcripts");
+    setTeams([]);
+    setCategories([]);
+    setPanels([]);
+    setChannels([]);
+    setRoles([]);
+    setSettings({});
+    setTranscriptChannelId("");
+    setClaimerBypassRoleIds([]);
+    setActiveTab("transcripts");
     setTranscripts(transcriptData.transcripts || []);
   };
 
   useEffect(() => {
+    if (isTermsRoute) {
+      return;
+    }
     let cancelled = false;
     const run = async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -169,12 +301,22 @@ export const App = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isTermsRoute]);
 
   useEffect(() => {
-    const onHashChange = () => setRouteHash(window.location.hash || "");
+    const updateRoute = () => {
+      setRouteHash(window.location.hash || "");
+      setRoutePath(window.location.pathname || "/");
+    };
+    const onHashChange = () => updateRoute();
+    const onPopState = () => updateRoute();
+    updateRoute();
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
 
   useEffect(() => {
@@ -182,6 +324,36 @@ export const App = () => {
       setActiveTab("transcripts");
     }
   }, [routeHash]);
+
+  useEffect(() => {
+    if (!isTermsRoute) {
+      return;
+    }
+
+    let cancelled = false;
+    fetch("/TERMS_AND_CONDITIONS.md", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Unable to load terms markdown.");
+        }
+        const content = await response.text();
+        if (cancelled) {
+          return;
+        }
+        setTermsMarkdown(content);
+        setTermsLoadError("");
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setTermsLoadError("Unable to load Terms and Conditions content.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isTermsRoute]);
 
   useEffect(() => {
     if (!user || !transcriptTicketId) {
@@ -194,6 +366,73 @@ export const App = () => {
         notifyErrorOnce(getErrorMessage(error, "Unable to load transcript"));
       });
   }, [user, transcriptTicketId]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    const viewingTranscripts = activeTab === "transcripts" || routeHash.startsWith("#/transcripts");
+    if (!viewingTranscripts) {
+      return;
+    }
+
+    const refreshTranscripts = async () => {
+      try {
+        const transcriptData = await apiFetch("/transcripts");
+        setTranscripts(transcriptData.transcripts || []);
+      } catch (error) {
+        console.warn("[dashboard] transcript auto-refresh failed", error);
+      }
+    };
+
+    void refreshTranscripts();
+    const timer = window.setInterval(() => {
+      void refreshTranscripts();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [user, activeTab, routeHash]);
+
+  useEffect(() => {
+    if (!user || !transcriptTicketId) {
+      return;
+    }
+
+    const refreshDetail = async () => {
+      try {
+        const data = await apiFetch(`/transcripts/${transcriptTicketId}`);
+        setActiveTranscript((data.transcript || null) as TranscriptDetail | null);
+      } catch (error) {
+        console.warn("[dashboard] transcript detail auto-refresh failed", error);
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshDetail();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [user, transcriptTicketId]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));
+  };
+
+  const themeToggle = (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={toggleTheme}
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {theme === "dark" ? "☀️" : "🌙"}
+    </button>
+  );
 
   const resetTeamForm = () => {
     setEditingTeamId(null);
@@ -392,11 +631,17 @@ export const App = () => {
       const response = await apiFetch("/settings", {
         method: "PUT",
         body: JSON.stringify({
-          transcriptChannelId: transcriptChannelId || null
+          transcriptChannelId: transcriptChannelId || null,
+          claimerBypassRoleIds
         })
       });
       setSettings(response.settings || {});
       setTranscriptChannelId((response.settings?.transcriptChannelId as string) || "");
+      setClaimerBypassRoleIds(
+        Array.isArray(response.settings?.claimerBypassRoleIds)
+          ? response.settings.claimerBypassRoleIds
+          : []
+      );
       alert("Settings saved.");
     } catch (error) {
       notifyErrorOnce(getErrorMessage(error, "Unable to save settings"));
@@ -405,15 +650,76 @@ export const App = () => {
     }
   };
 
+  const termsPage = (
+    <div className="page">
+      {themeToggle}
+      <header className="hero">
+        <div>
+          <h1>Terms and Conditions</h1>
+          <p>RAIL Ticketing System</p>
+        </div>
+        <a className="button secondary" href="/">
+          Back to Dashboard
+        </a>
+      </header>
+
+      {termsLoadError ? (
+        <section className="card">
+          <p className="muted">{termsLoadError}</p>
+        </section>
+      ) : termsHtml ? (
+        <article className="card terms-markdown" dangerouslySetInnerHTML={{ __html: termsHtml }} />
+      ) : (
+        <section className="card">
+          <p className="muted">Loading terms...</p>
+        </section>
+      )}
+
+      <footer className="brand-footer">{brandingFooter}</footer>
+    </div>
+  );
+
+  if (isTermsRoute) {
+    return termsPage;
+  }
+
   if (!user) {
     return (
       <div className="page">
+        {themeToggle}
         <div className="card login-card">
-          <h1>Rail Dashboard</h1>
+          <h1>{appName}</h1>
           <p>Sign in with Discord to manage tickets and panels.</p>
-          <a className="button" href={`${import.meta.env.VITE_API_BASE}/auth/login`}>
+          <a className="button" href={loginHref}>
             Log in with Discord
           </a>
+        </div>
+        <a className="button secondary" href="/terms">
+          Terms and Conditions
+        </a>
+        <footer className="brand-footer">{brandingFooter}</footer>
+      </div>
+    );
+  }
+
+  if (user && user.canAccessDashboard === false) {
+    return (
+      <div className="page">
+        {themeToggle}
+        <div className="card login-card">
+          <h1>{appName}</h1>
+          <p>Your account does not have dashboard access for this guild.</p>
+          <button
+            className="button secondary"
+            onClick={() =>
+              apiFetch("/auth/logout", { method: "POST" }).then(() => {
+                window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+                window.location.reload();
+              })
+            }
+          >
+            Log out
+          </button>
         </div>
         <footer className="brand-footer">{brandingFooter}</footer>
       </div>
@@ -422,11 +728,13 @@ export const App = () => {
 
   if (transcriptTicketId) {
     const looksLikeHtml = Boolean(activeTranscript?.content?.trim().startsWith("<"));
+    const transcriptTitle = formatTicketTitle(activeTranscript?.ticketLabel, transcriptTicketId);
     return (
       <div className="page">
+        {themeToggle}
         <header className="hero">
           <div>
-            <h1>Transcript {activeTranscript?.ticketLabel || (transcriptTicketId ? `ticket-${transcriptTicketId.slice(0, 6)}` : "")}</h1>
+            <h1>Transcript {transcriptTitle}</h1>
             <p>Opened by <strong>{activeTranscript?.openedByName || activeTranscript?.openedById || "unknown"}</strong> • Closed by <strong>{activeTranscript?.closedByName || activeTranscript?.closedById || "unknown"}</strong></p>
           </div>
           <a className="button secondary" href="#/transcripts">
@@ -453,15 +761,17 @@ export const App = () => {
 
   return (
     <div className="page">
+      {themeToggle}
       <header className="hero">
         <div>
-          <h1>Rail Dashboard</h1>
-          <p>Manage teams, categories, and ticket panels from one clean workspace.</p>
+          <h1>{appName}</h1>
+          <p>{user.canManage ? "Manage teams, categories, and ticket panels from one clean workspace." : "View ticket transcripts."}</p>
         </div>
         <button
           className="button secondary"
           onClick={() =>
             apiFetch("/auth/logout", { method: "POST" }).then(() => {
+              window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
               window.location.reload();
             })
           }
@@ -471,13 +781,20 @@ export const App = () => {
       </header>
 
       <div className="tabs">
-        <button className={`tab ${activeTab === "teams" ? "active" : ""}`} onClick={() => { setActiveTab("teams"); window.location.hash = "#/"; }}>Teams ({teams.length})</button>
-        <button className={`tab ${activeTab === "categories" ? "active" : ""}`} onClick={() => { setActiveTab("categories"); window.location.hash = "#/"; }}>Categories ({categories.length})</button>
-        <button className={`tab ${activeTab === "panels" ? "active" : ""}`} onClick={() => { setActiveTab("panels"); window.location.hash = "#/"; }}>Panels ({panels.length})</button>
+        {user.canManage && (
+          <>
+            <button className={`tab ${activeTab === "teams" ? "active" : ""}`} onClick={() => { setActiveTab("teams"); window.location.hash = "#/"; }}>Teams ({teams.length})</button>
+            <button className={`tab ${activeTab === "categories" ? "active" : ""}`} onClick={() => { setActiveTab("categories"); window.location.hash = "#/"; }}>Categories ({categories.length})</button>
+            <button className={`tab ${activeTab === "panels" ? "active" : ""}`} onClick={() => { setActiveTab("panels"); window.location.hash = "#/"; }}>Panels ({panels.length})</button>
+          </>
+        )}
         <button className={`tab ${activeTab === "transcripts" ? "active" : ""}`} onClick={() => { setActiveTab("transcripts"); window.location.hash = "#/transcripts"; }}>Transcripts ({transcripts.length})</button>
+        {user?.isSuperuser && (
+          <button className={`tab ${activeTab === "gdpr-admin" ? "active" : ""}`} onClick={() => { setActiveTab("gdpr-admin"); window.location.hash = "#/gdpr-admin"; }}>GDPR Admin</button>
+        )}
       </div>
 
-      {activeTab === "teams" && (
+      {user.canManage && activeTab === "teams" && (
         <section className="grid">
           <div className="card">
             <h2>{editingTeamId ? "Edit Team" : "Create Team"}</h2>
@@ -507,7 +824,7 @@ export const App = () => {
                         }}
                       >
                         <span className={checked ? "checkbox checked" : "checkbox"}>{checked ? "✓" : ""}</span>
-                        <span>@{role.name}</span>
+                        <span className="role-name" style={role.colorHex ? { color: role.colorHex } : undefined}>{role.name}</span>
                       </button>
                     );
                   })
@@ -549,7 +866,7 @@ export const App = () => {
         </section>
       )}
 
-      {activeTab === "categories" && (
+      {user.canManage && activeTab === "categories" && (
         <section className="grid">
           <div className="card">
             <h2>{editingCategoryId ? "Edit Category" : "Create Category"}</h2>
@@ -560,6 +877,7 @@ export const App = () => {
             <label>
               Description
               <textarea
+                className="description-textarea"
                 value={categoryDescription}
                 onChange={(e) => setCategoryDescription(e.target.value)}
                 placeholder="Add a detailed description"
@@ -607,7 +925,7 @@ export const App = () => {
                   <div key={category.id} className="item">
                     <div>
                       <h3>{category.name}</h3>
-                      <p className="multiline-text">{category.description}</p>
+                      <p className="multiline-text">{renderDiscordEmojiText(category.description)}</p>
                       <div className="meta">{teams.find((t) => t.id === category.supportTeamId)?.name || "Unknown Team"}</div>
                     </div>
                     <div className="actions">
@@ -622,7 +940,7 @@ export const App = () => {
         </section>
       )}
 
-      {activeTab === "panels" && (
+      {user.canManage && activeTab === "panels" && (
         <section className="grid">
           <div className="card">
             <h2>{editingPanelId ? "Edit Panel" : "Create Panel"}</h2>
@@ -643,7 +961,7 @@ export const App = () => {
             </label>
             <label>
               Description
-              <textarea value={panelDescription} onChange={(e) => setPanelDescription(e.target.value)} />
+              <textarea className="description-textarea" value={panelDescription} onChange={(e) => setPanelDescription(e.target.value)} />
             </label>
             <label>
               Categories
@@ -677,11 +995,44 @@ export const App = () => {
                 ))}
               </select>
             </label>
+            <label>
+              Claimer Bypass Roles
+              <div className="role-picker">
+                {roles.length === 0 ? (
+                  <span className="muted">No roles found.</span>
+                ) : (
+                  roles.map((role) => {
+                    const checked = claimerBypassRoleIds.includes(role.id);
+                    return (
+                      <button
+                        key={`claimer-bypass-${role.id}`}
+                        type="button"
+                        className={checked ? "role-item checked" : "role-item"}
+                        onClick={() => {
+                          setClaimerBypassRoleIds((current) =>
+                            current.includes(role.id)
+                              ? current.filter((entry) => entry !== role.id)
+                              : [...current, role.id]
+                          );
+                        }}
+                      >
+                        <span className={checked ? "checkbox checked" : "checkbox"}>{checked ? "✓" : ""}</span>
+                        <span className="role-name" style={role.colorHex ? { color: role.colorHex } : undefined}>{role.name}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <span className="muted">Selected bypass roles: {claimerBypassRoleIds.length}</span>
+            </label>
             <button className="button secondary" onClick={saveSettings} disabled={busy}>
               Save Settings
             </button>
             <p className="muted">
               Saved transcript channel: {settings.transcriptChannelId ? `#${textChannels.find((channel) => channel.id === settings.transcriptChannelId)?.name || settings.transcriptChannelId}` : "ticket channel"}
+            </p>
+            <p className="muted">
+              Claimer bypass roles: {Array.isArray(settings.claimerBypassRoleIds) ? settings.claimerBypassRoleIds.length : 0}
             </p>
             <div className="actions">
               <button className="button" onClick={savePanel} disabled={busy}>{editingPanelId ? "Save Panel" : "Create Panel"}</button>
@@ -702,8 +1053,8 @@ export const App = () => {
                 {panels.map((panel) => (
                   <div key={panel.id} className="item">
                     <div>
-                      <h3>{panel.title}</h3>
-                      <p>{panel.description}</p>
+                      <h3>{renderDiscordEmojiText(panel.title)}</h3>
+                      <p className="multiline-text">{renderDiscordEmojiText(panel.description)}</p>
                       <div className="meta">
                         Channel {textChannels.find((channel) => channel.id === panel.channelId)?.name || panel.channelId}
                       </div>
@@ -715,13 +1066,18 @@ export const App = () => {
                       <button className="button secondary" onClick={() => startEditPanel(panel)} disabled={busy}>Edit</button>
                       <button
                         className="button secondary"
-                        onClick={() =>
-                          apiFetch(`/panels/${panel.id}/publish`, { method: "POST" })
-                            .then(() => load())
-                            .catch((error) => {
-                              notifyErrorOnce(getErrorMessage(error, "Unable to publish panel"));
-                            })
-                        }
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            await apiFetch(`/panels/${panel.id}/publish`, { method: "POST" });
+                            await load();
+                            alert("Panel published.");
+                          } catch (error) {
+                            notifyErrorOnce(getErrorMessage(error, "Unable to publish panel"));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
                         disabled={busy}
                       >
                         Publish
@@ -791,7 +1147,7 @@ export const App = () => {
               {transcripts.map((entry) => (
                 <div key={entry.ticketId} className="item">
                   <div>
-                    <h3>{entry.ticketLabel || `ticket-${entry.ticketId.slice(0, 6)}`}</h3>
+                    <h3>{formatTicketTitle(entry.ticketLabel, entry.ticketId)}</h3>
                     <div className="meta">Opened by: {entry.openedByName || entry.openedById}</div>
                     <div className="meta">Closed by: {entry.closedByName || entry.closedById || "unknown"}</div>
                     <div className="meta">Reason: {entry.reason || "No reason provided"}</div>
@@ -810,7 +1166,174 @@ export const App = () => {
           )}
         </section>
       )}
-      <footer className="brand-footer">{brandingFooter}</footer>
+
+      {user?.isSuperuser && activeTab === "gdpr-admin" && (
+        <section className="card">
+          <h2>GDPR Admin Tools</h2>
+          <p className="muted">Manage user data for GDPR compliance. All actions are logged and audited.</p>
+          
+          <div className="actions" style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to access their data:");
+                if (!userId) return;
+                setBusy(true);
+                try {
+                  const data = await apiFetch(`/gdpr/admin/user-data/${encodeURIComponent(userId)}`, { method: "GET" });
+                  alert(`Data retrieved for ${data.targetUserId}:\n\nTickets: ${data.summary.totalTickets}\nEvents: ${data.summary.totalEvents}\nTranscripts: ${data.summary.totalTranscripts}\nConsents: ${data.summary.activeConsents}\n\nCheck console for full data.`);
+                  console.log("User Data:", data);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to retrieve user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Article 15: View User Data
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to export their data:");
+                if (!userId) return;
+                setBusy(true);
+                try {
+                  const data = await apiFetch(`/gdpr/admin/export/${encodeURIComponent(userId)}`, { method: "GET" });
+                  const json = JSON.stringify(data, null, 2);
+                  const blob = new Blob([json], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `user-${userId}-gdpr-export-${new Date().toISOString().split("T")[0]}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  alert(`Export complete for ${userId}. File downloaded.`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to export user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Article 20: Export User Data (Portability)
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to rectify:");
+                if (!userId) return;
+                const fieldPath = prompt("Enter field path to rectify (e.g., username):");
+                if (!fieldPath) return;
+                const newValue = prompt("Enter new value:");
+                if (newValue === null) return;
+                const reason = prompt("Enter reason for rectification:") || "Admin rectification";
+                
+                if (!window.confirm(`Rectify ${fieldPath} for user ${userId}?`)) return;
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch("/gdpr/admin/rectify", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ targetUserId: userId, fieldPath, newValue, reason }),
+                  });
+                  alert(`Rectification recorded: ${result.rectificationId}\nField: ${result.field}\nManually verify and apply changes to backend systems.`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to rectify user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Article 16: Rectify User Data
+            </button>
+            
+            <button
+              className="button"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("Enter user ID to restrict processing:");
+                if (!userId) return;
+                const types = ["marketing", "profiling", "automated_decision_making", "data_sharing", "all"];
+                let restrictionType = prompt(`Enter restriction type.\nValid options: ${types.join(", ")}`);
+                if (!restrictionType || !types.includes(restrictionType)) {
+                  alert("Invalid restriction type");
+                  return;
+                }
+                const reason = prompt("Enter reason:") || "Admin-initiated restriction";
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch("/gdpr/admin/restrict-processing", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ targetUserId: userId, restrictionType, reason }),
+                  });
+                  alert(`Processing restricted for user ${result.appliedTo}\nType: ${result.restrictionType}\nRestriction ID: ${result.restrictionId}`);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to restrict processing"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Article 18: Restrict Processing
+            </button>
+            
+            <button
+              className="button danger"
+              disabled={busy}
+              onClick={async () => {
+                const userId = prompt("DESTRUCTIVE: Enter user ID to permanently delete all data:");
+                if (!userId) return;
+                const reason = prompt("Enter reason for erasure:") || "Admin-initiated erasure";
+                
+                if (!window.confirm(`THIS WILL PERMANENTLY DELETE ALL DATA FOR USER ${userId}\n\nThis cannot be undone!\n\nContinue?`)) return;
+                
+                const confirmed = prompt(`Type DELETE_THIS_USER_DATA to confirm deletion of ${userId}:`);
+                if (confirmed !== "DELETE_THIS_USER_DATA") {
+                  alert("Deletion cancelled.");
+                  return;
+                }
+                
+                setBusy(true);
+                try {
+                  const result = await apiFetch(`/gdpr/admin/delete-user-data/${encodeURIComponent(userId)}`, {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ confirmDeletion: "DELETE_THIS_USER_DATA", reason }),
+                  });
+                  alert(`User data permanently deleted!\nDeletion ID: ${result.deletionId}\nDeleted: ${result.deletedItems.tickets} tickets, ${result.deletedItems.events} events, ${result.deletedItems.transcripts} transcripts`);
+                  console.log("Deletion result:", result);
+                } catch (error) {
+                  notifyErrorOnce(getErrorMessage(error, "Failed to delete user data"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Article 17: Delete User Data (Erasure)
+            </button>
+          </div>
+          
+          <div style={{ marginTop: "2rem", padding: "1rem", backgroundColor: "rgba(255,0,0,0.05)", borderRadius: "4px" }}>
+            <h3>⚠️ Important</h3>
+            <ul>
+              <li>All operations are fully audited and logged</li>
+              <li>Deletion is permanent and cannot be reversed</li>
+              <li>Rectification changes must be manually verified</li>
+              <li>Use with care - these are destructive operations</li>
+            </ul>
+          </div>
+        </section>
+      )}
     </div>
   );
 };
+

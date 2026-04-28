@@ -2,12 +2,12 @@ import { Router } from "express";
 import { prisma } from "@rail/db";
 import { Prisma } from "@prisma/client";
 import { panelConfigSchema, panelUpdateSchema } from "@rail/shared";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 import { syncPanelMessage } from "../services/panels.js";
 
 export const panelsRouter = Router();
 
-panelsRouter.get("/", requireSession, requireStaff, async (req, res) => {
+panelsRouter.get("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const panels = await prisma.ticketPanel.findMany({
     where: { guildId },
@@ -22,7 +22,7 @@ panelsRouter.get("/", requireSession, requireStaff, async (req, res) => {
   res.json({ panels });
 });
 
-panelsRouter.post("/", requireSession, requireStaff, async (req, res) => {
+panelsRouter.post("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const input = panelConfigSchema.parse(req.body);
   const existing = await prisma.ticketPanel.findFirst({
@@ -60,7 +60,7 @@ panelsRouter.post("/", requireSession, requireStaff, async (req, res) => {
   }
 });
 
-panelsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
+panelsRouter.put("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const panelId = String(req.params.id || "");
   const input = panelUpdateSchema.parse(req.body);
@@ -112,7 +112,7 @@ panelsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
   }
 });
 
-panelsRouter.post("/:id/publish", requireSession, requireStaff, async (req, res) => {
+panelsRouter.post("/:id/publish", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const panelId = String(req.params.id || "");
   const panel = await prisma.ticketPanel.findFirst({
@@ -134,7 +134,7 @@ panelsRouter.post("/:id/publish", requireSession, requireStaff, async (req, res)
   }
 });
 
-panelsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
+panelsRouter.delete("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const panelId = String(req.params.id || "");
   const panel = await prisma.ticketPanel.findFirst({
@@ -148,3 +148,4 @@ panelsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
   await prisma.ticketPanel.delete({ where: { id: panelId } });
   res.json({ ok: true });
 });
+

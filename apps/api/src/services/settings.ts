@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 
 type GuildSettingsRecord = {
   transcriptChannelId?: string;
+  mediaForumChannelId?: string;
+  claimerBypassRoleIds?: string[];
 };
 
 type SettingsStore = Record<string, GuildSettingsRecord>;
@@ -54,3 +56,4 @@ export const setGuildSettings = async (
   await writeStore(store);
   return next;
 };
+

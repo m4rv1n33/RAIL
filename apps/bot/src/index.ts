@@ -2,6 +2,7 @@ import { config } from "dotenv";
 import express from "express";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -46,6 +47,63 @@ const client = new Client({
 
 client.on("error", (error) => {
   console.error("Discord client error:", error);
+});
+
+const updateBotPresence = () => {
+  if (!client.user) {
+    return;
+  }
+  const totalMembers = client.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0);
+  client.user.setActivity(`Watching over ${totalMembers.toLocaleString()} members`);
+};
+
+client.once("ready", () => {
+  updateBotPresence();
+});
+
+client.on("guildCreate", () => {
+  updateBotPresence();
+});
+
+client.on("guildDelete", () => {
+  updateBotPresence();
+});
+
+client.on("guildMemberAdd", () => {
+  updateBotPresence();
+});
+
+client.on("guildMemberRemove", async (member) => {
+  updateBotPresence();
+
+  try {
+    const openTickets = await prisma.ticket.findMany({
+      where: {
+        guildId: member.guild.id,
+        ownerId: member.id,
+        status: { in: [TicketStatus.Open, TicketStatus.InProgress, TicketStatus.Waiting] }
+      },
+      select: { id: true }
+    });
+
+    for (const ticket of openTickets) {
+      await closeTicket(ticket.id, "system", "Ticket creator left the server");
+    }
+
+    if (openTickets.length > 0) {
+      console.info("[ticket-auto-close] Closed tickets for departed member", {
+        guildId: member.guild.id,
+        memberId: member.id,
+        closedCount: openTickets.length
+      });
+    }
+  } catch (error) {
+    console.warn("[ticket-auto-close] Failed to close tickets for departed member", {
+      guildId: member.guild.id,
+      memberId: member.id,
+      error
+    });
+  }
 });
 
 type ModalField = {
@@ -187,11 +245,29 @@ const toDiscordTimestamp = (value?: string) => {
   return `<t:${unix}:F>`;
 };
 
-const BRAND_FOOTER = "Powered by RAIL • built by @m4rv1n_33";
+const APP_NAME = "RAIL Ticket System";
+const BRAND_FOOTER = "Powered by RAIL, built by @m4rv1n_33";
+const PRIMARY_EMBED_COLOR = "#1938b4";
+const PANEL_TOP_BANNER_NAME = "top.png";
+const PANEL_BOTTOM_BANNER_NAME = "bottom.png";
 const TEAM_AUTOCOMPLETE_CACHE_TTL_MS = Number(process.env.TEAM_AUTOCOMPLETE_CACHE_TTL_MS || 30_000);
+const ATTACHMENT_STORAGE_CACHE_TTL_MS = Number(process.env.ATTACHMENT_STORAGE_CACHE_TTL_MS || 30_000);
+const HARDCODED_MEDIA_BACKUP_CHANNEL_ID = "1477791851242193051";
+const TICKET_BLACKLIST_ROLE_ID = "1478457037607403610";
 
 type AutocompleteTeam = { id: string; name: string };
 const teamAutocompleteCache = new Map<string, { expiresAt: number; teams: AutocompleteTeam[] }>();
+const attachmentArchiveChannelCache = new Map<string, { expiresAt: number; channelId: string }>();
+const renameInFlightByChannel = new Map<string, Promise<void>>();
+const lastRenameAtByChannel = new Map<string, number>();
+const channelMutationQueue = new Map<string, Promise<unknown>>();
+const RENAME_MIN_INTERVAL_MS = Number(process.env.RENAME_MIN_INTERVAL_MS || 600000);
+
+type MediaPostLinkData = {
+  threadId: string;
+  forumChannelId: string;
+  starterMessageId?: string;
+};
 
 const isPrismaPoolTimeout = (error: unknown) => {
   if (!error || typeof error !== "object") {
@@ -199,6 +275,103 @@ const isPrismaPoolTimeout = (error: unknown) => {
   }
   const candidate = error as { code?: unknown };
   return candidate.code === "P2024";
+};
+
+const withTimeout = async <T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(label));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
+const enqueueChannelMutation = async <T>(channelId: string, task: () => Promise<T>): Promise<T> => {
+  const previous = channelMutationQueue.get(channelId) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(task);
+
+  channelMutationQueue.set(channelId, next);
+
+  try {
+    return await next;
+  } finally {
+    if (channelMutationQueue.get(channelId) === next) {
+      channelMutationQueue.delete(channelId);
+    }
+  }
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isDiscordApiErrorCode = (error: unknown, code: number) => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown };
+  return candidate.code === code;
+};
+
+const isIgnorableOverwriteError = (error: unknown) =>
+  isDiscordApiErrorCode(error, 10003) || isDiscordApiErrorCode(error, 10009);
+
+const renameTextChannelWithRetry = async (
+  channel: import("discord.js").TextChannel,
+  nextName: string,
+  options?: { maxAttempts?: number; perAttemptTimeoutMs?: number }
+) => {
+  if (channel.name === nextName) {
+    return;
+  }
+
+  const maxAttempts = options?.maxAttempts ?? 3;
+  const perAttemptTimeoutMs = options?.perAttemptTimeoutMs ?? 20000;
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await withTimeout(
+        channel.setName(nextName),
+        perAttemptTimeoutMs,
+        `rename_channel_setname_timeout_attempt_${attempt}`
+      );
+      return;
+    } catch (error) {
+      if (isDiscordApiErrorCode(error, 10003)) {
+        throw new Error("rename_channel_unknown");
+      }
+      if (isDiscordApiErrorCode(error, 50001)) {
+        throw new Error("rename_channel_missing_access");
+      }
+      lastError = error;
+
+      const refreshed = await withTimeout(
+        channel.client.channels.fetch(channel.id).catch(() => null),
+        10000,
+        `rename_channel_refetch_timeout_attempt_${attempt}`
+      );
+      if (refreshed && refreshed.type === ChannelType.GuildText && refreshed.name === nextName) {
+        return;
+      }
+
+      if (attempt < maxAttempts) {
+        await sleep(1200 * attempt);
+        continue;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("rename_channel_setname_failed");
 };
 
 const getTeamsForAutocomplete = async (guildId: string) => {
@@ -239,6 +412,18 @@ const getSettingsFilePath = () => {
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 };
 
+const getAssetFilePath = (fileName: string) => {
+  const candidates = [
+    path.resolve(process.cwd(), "assets", fileName),
+    path.resolve(process.cwd(), "..", "..", "assets", fileName)
+  ];
+  const resolved = candidates.find((candidate) => existsSync(candidate));
+  if (!resolved) {
+    throw new Error(`asset_not_found:${fileName}`);
+  }
+  return resolved;
+};
+
 const getTranscriptChannelIdForGuild = async (guildId: string) => {
   const settingsFilePath = getSettingsFilePath();
   try {
@@ -248,6 +433,462 @@ const getTranscriptChannelIdForGuild = async (guildId: string) => {
   } catch {
     return process.env.TRANSCRIPT_CHANNEL_ID || "";
   }
+};
+
+const getMediaForumChannelIdForGuild = async (guildId: string) => {
+  if (HARDCODED_MEDIA_BACKUP_CHANNEL_ID) {
+    return HARDCODED_MEDIA_BACKUP_CHANNEL_ID;
+  }
+
+  const cached = attachmentArchiveChannelCache.get(guildId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.channelId;
+  }
+
+  const settingsFilePath = getSettingsFilePath();
+  let channelId = "";
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<
+      string,
+      {
+        mediaForumChannelId?: string;
+        attachmentForumChannelId?: string;
+        attachmentArchiveChannelId?: string;
+        mediaArchiveChannelId?: string;
+        transcriptChannelId?: string;
+      }
+    >;
+    const guildSettings = parsed[guildId] || {};
+    channelId =
+      guildSettings.mediaForumChannelId ||
+      guildSettings.attachmentForumChannelId ||
+      process.env.MEDIA_FORUM_CHANNEL_ID ||
+      process.env.ATTACHMENT_FORUM_CHANNEL_ID ||
+      guildSettings.attachmentArchiveChannelId ||
+      guildSettings.mediaArchiveChannelId ||
+      process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
+      process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
+      "";
+  } catch {
+    channelId =
+      process.env.MEDIA_FORUM_CHANNEL_ID ||
+      process.env.ATTACHMENT_FORUM_CHANNEL_ID ||
+      process.env.ATTACHMENT_ARCHIVE_CHANNEL_ID ||
+      process.env.MEDIA_ARCHIVE_CHANNEL_ID ||
+      "";
+  }
+
+  attachmentArchiveChannelCache.set(guildId, {
+    expiresAt: now + ATTACHMENT_STORAGE_CACHE_TTL_MS,
+    channelId
+  });
+
+  return channelId;
+};
+
+const getClaimerBypassRoleIdsForGuild = async (guildId: string) => {
+  const settingsFilePath = getSettingsFilePath();
+  try {
+    const content = await fs.readFile(settingsFilePath, "utf-8");
+    const parsed = JSON.parse(content) as Record<
+      string,
+      {
+        claimerBypassRoleIds?: unknown;
+      }
+    >;
+    const configured = parsed[guildId]?.claimerBypassRoleIds;
+    if (!Array.isArray(configured)) {
+      return [];
+    }
+    return [...new Set(configured.filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+  } catch {
+    return [];
+  }
+};
+
+const parseMediaPostLinkData = (value: unknown): MediaPostLinkData | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as { threadId?: unknown; forumChannelId?: unknown; starterMessageId?: unknown };
+  if (typeof candidate.threadId !== "string" || typeof candidate.forumChannelId !== "string") {
+    return null;
+  }
+  return {
+    threadId: candidate.threadId,
+    forumChannelId: candidate.forumChannelId,
+    starterMessageId: typeof candidate.starterMessageId === "string" ? candidate.starterMessageId : undefined
+  };
+};
+
+const getTicketMediaPostLink = async (ticketId: string) => {
+  const event = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: "MEDIA_POST_LINK" },
+    orderBy: { createdAt: "desc" }
+  });
+  return parseMediaPostLinkData(event?.data);
+};
+
+const saveTicketMediaPostLink = async (ticketId: string, actorId: string, link: MediaPostLinkData) => {
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId,
+      type: "MEDIA_POST_LINK",
+      actorId,
+      data: link
+    }
+  });
+};
+
+const createMediaBackupThread = async (
+  ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
+  actorId: string
+) => {
+  const backupChannelId = await getMediaForumChannelIdForGuild(ticket.guildId);
+  if (!backupChannelId) {
+    return null;
+  }
+
+  const backupChannel = await client.channels.fetch(backupChannelId).catch(() => null);
+  if (!backupChannel || (backupChannel.type !== ChannelType.GuildText && backupChannel.type !== ChannelType.GuildAnnouncement)) {
+    return null;
+  }
+
+  const threadName = await getTicketTitleForMediaPost(ticket);
+  const starterMessage = await backupChannel.send(`Media backup thread for Ticket ${threadName}`);
+  const thread = await starterMessage.startThread({ name: threadName }).catch(() => null);
+  if (!thread) {
+    return null;
+  }
+
+  await thread.send(`Ticket UUID: ${ticket.id}`).catch(() => null);
+  await saveTicketMediaPostLink(ticket.id, actorId, {
+    threadId: thread.id,
+    forumChannelId: backupChannel.id,
+    starterMessageId: starterMessage.id
+  });
+
+  return thread;
+};
+
+const getTicketTitleForMediaPost = async (ticket: { id: string; channelId: string; ticketNumber?: number | null }) => {
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (channel && channel.type === ChannelType.GuildText) {
+    return channel.name;
+  }
+  return getTicketDisplayLabel(ticket);
+};
+
+const enforceReadOnlyMediaPost = async (thread: import("discord.js").AnyThreadChannel) => {
+  await thread.setLocked(true).catch(() => null);
+};
+
+const buildMediaEmbed = (
+  ticketLabel: string,
+  message: import("discord.js").Message
+) => {
+  const sentAtUnix = Math.floor(message.createdTimestamp / 1000);
+  const description = message.content?.trim() || "(No text content)";
+  return new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setTitle(`Media • ${ticketLabel}`)
+    .setDescription(description.slice(0, 4000))
+    .addFields(
+      { name: "Sent By", value: `<@${message.author.id}>`, inline: true },
+      { name: "Sent At", value: `<t:${sentAtUnix}:F>`, inline: true },
+      { name: "Source", value: `[Jump to message](${message.url})`, inline: false }
+    )
+    .setFooter({ text: BRAND_FOOTER });
+};
+
+const getAttachmentChunks = (message: import("discord.js").Message) => {
+  const attachments = [...message.attachments.values()].map(
+    (attachment, index) =>
+      new AttachmentBuilder(attachment.url, {
+        name: attachment.name || `attachment-${index + 1}`
+      })
+  );
+  const chunks: AttachmentBuilder[][] = [];
+  for (let index = 0; index < attachments.length; index += 10) {
+    chunks.push(attachments.slice(index, index + 10));
+  }
+  return chunks;
+};
+
+const createMediaPostWithFirstMessage = async (
+  ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
+  message: import("discord.js").Message
+) => {
+  const created = await createMediaBackupThread(ticket, message.author.id);
+  if (!created) {
+    return;
+  }
+
+  const ticketLabel = getTicketDisplayLabel(ticket);
+  const attachmentChunks = getAttachmentChunks(message);
+  if (attachmentChunks.length === 0) {
+    return;
+  }
+
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId: ticket.id,
+      type: "MEDIA_FORWARD",
+      actorId: message.author.id,
+      data: {
+        messageId: message.id,
+        attachmentCount: message.attachments.size,
+        threadId: created.id
+      }
+    }
+  });
+
+  for (let index = 0; index < attachmentChunks.length; index += 1) {
+    await created.send({
+      embeds: [buildMediaEmbed(ticketLabel, message)],
+      files: attachmentChunks[index]
+    });
+  }
+
+  await enforceReadOnlyMediaPost(created);
+  return created;
+};
+
+const getLinkedMediaThread = async (ticketId: string) => {
+  const link = await getTicketMediaPostLink(ticketId);
+  if (!link) {
+    return null;
+  }
+  const channel = await client.channels.fetch(link.threadId).catch(() => null);
+  if (!channel || !channel.isThread()) {
+    return null;
+  }
+  return channel;
+};
+
+const getLatestRenamedTicketName = async (ticketId: string) => {
+  const event = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: "RENAME" },
+    orderBy: { createdAt: "desc" },
+    select: { data: true }
+  });
+  const payload = event?.data as { name?: unknown } | null;
+  if (!payload || typeof payload.name !== "string") {
+    return "";
+  }
+  return payload.name.trim();
+};
+
+const buildTicketTitle = (name: string) => `Ticket ${name}`;
+
+const resolveTicketName = async (
+  ticket: { id: string; channelId: string; ticketNumber?: number | null }
+) => {
+  const latestRename = await getLatestRenamedTicketName(ticket.id);
+  if (latestRename) {
+    return latestRename;
+  }
+
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (channel && channel.type === ChannelType.GuildText) {
+    return channel.name;
+  }
+
+  return getTicketDisplayLabel(ticket);
+};
+
+const syncTicketMediaPostTitle = async (ticketId: string, title: string) => {
+  const normalized = title.trim().slice(0, 100);
+  if (!normalized) {
+    return;
+  }
+  const thread = await getLinkedMediaThread(ticketId);
+  if (!thread) {
+    return;
+  }
+  await thread.setName(normalized).catch(() => null);
+};
+
+const syncTicketMediaPostStarterMessage = async (ticketId: string, title: string) => {
+  const normalized = title.trim();
+  if (!normalized) {
+    return;
+  }
+
+  const link = await getTicketMediaPostLink(ticketId);
+  if (!link?.starterMessageId) {
+    return;
+  }
+
+  const channel = await client.channels.fetch(link.forumChannelId).catch(() => null);
+  if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
+    return;
+  }
+
+  const starterMessage = await channel.messages.fetch(link.starterMessageId).catch(() => null);
+  if (!starterMessage) {
+    return;
+  }
+
+  await starterMessage.edit(`Media backup thread for ${buildTicketTitle(normalized)}`).catch(() => null);
+};
+
+const syncTicketControlEmbedTitle = async (
+  channel: import("discord.js").TextChannel,
+  ticketId: string,
+  title: string
+) => {
+  const normalized = title.trim();
+  if (!normalized) {
+    return;
+  }
+
+  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!messages) {
+    return;
+  }
+
+  const target = messages
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .find((message) =>
+      message.author.id === client.user?.id &&
+      message.embeds.length > 0 &&
+      message.components.some((row) => {
+        const rowLike = row as { components?: Array<{ customId?: string }> };
+        const components = Array.isArray(rowLike.components) ? rowLike.components : [];
+        return components.some(
+          (component) =>
+            typeof component.customId === "string" &&
+            (component.customId === `ticket:claim:${ticketId}` || component.customId === `ticket:close:${ticketId}`)
+        );
+      })
+    );
+
+  if (!target) {
+    return;
+  }
+
+  const updatedEmbed = EmbedBuilder.from(target.embeds[0]);
+  updatedEmbed.setTitle(buildTicketTitle(normalized));
+  await target.edit({ embeds: [updatedEmbed] }).catch(() => null);
+};
+
+const notifyTicketOwnerClosed = async (params: {
+  ownerId: string;
+  ticketName: string;
+  closedById: string;
+  closedAt: Date;
+  reason?: string;
+}) => {
+  const owner = await client.users.fetch(params.ownerId).catch(() => null);
+  if (!owner) {
+    return;
+  }
+
+  const closedByValue =
+    params.closedById === "system"
+      ? "System"
+      : `<@${params.closedById}>`;
+
+  const embed = new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setTitle("Your ticket has been closed")
+    .addFields(
+      { name: "Ticket Name", value: buildTicketTitle(params.ticketName), inline: false },
+      { name: "Closed By", value: closedByValue, inline: true },
+      { name: "Closing Time", value: `<t:${Math.floor(params.closedAt.getTime() / 1000)}:F>`, inline: true },
+      { name: "Reason", value: params.reason || "No reason provided", inline: false }
+    )
+    .setFooter({ text: BRAND_FOOTER });
+
+  await owner.send({ embeds: [embed] }).catch(() => null);
+};
+
+const forwardMediaToTicketPost = async (
+  ticket: { id: string; guildId: string; channelId: string; ticketNumber?: number | null },
+  message: import("discord.js").Message
+) => {
+  if (message.attachments.size === 0) {
+    return;
+  }
+
+  const linkedThread = await getLinkedMediaThread(ticket.id);
+  if (!linkedThread) {
+    await createMediaPostWithFirstMessage(ticket, message);
+    return;
+  }
+
+  await linkedThread.setLocked(false).catch(() => null);
+
+  const ticketLabel = getTicketDisplayLabel(ticket);
+  const chunks = getAttachmentChunks(message);
+  for (const chunk of chunks) {
+    await linkedThread.send({
+      embeds: [buildMediaEmbed(ticketLabel, message)],
+      files: chunk
+    });
+  }
+
+  await prisma.ticketEvent.create({
+    data: {
+      ticketId: ticket.id,
+      type: "MEDIA_FORWARD",
+      actorId: message.author.id,
+      data: {
+        messageId: message.id,
+        attachmentCount: message.attachments.size,
+        threadId: linkedThread.id
+      }
+    }
+  });
+
+  await enforceReadOnlyMediaPost(linkedThread);
+};
+
+const finalizeTicketMediaPost = async (ticket: {
+  id: string;
+  guildId: string;
+  channelId: string;
+  ticketNumber?: number | null;
+  closeReason?: string | null;
+}) => {
+  let thread = await getLinkedMediaThread(ticket.id);
+  const hadMirroredMedia = Boolean(
+    await prisma.ticketEvent.findFirst({
+      where: { ticketId: ticket.id, type: "MEDIA_FORWARD" },
+      select: { id: true }
+    })
+  );
+
+  if (!thread) {
+    thread = await createMediaBackupThread(ticket, "system");
+    if (thread && !hadMirroredMedia) {
+      await thread.send("No media available for this ticket.").catch(() => null);
+    }
+  } else if (!hadMirroredMedia) {
+    await thread.send("No media available for this ticket.").catch(() => null);
+  }
+
+  if (!thread) {
+    return;
+  }
+
+  await thread
+    .send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(PRIMARY_EMBED_COLOR)
+          .setTitle("Ticket has been closed")
+          .setDescription(ticket.closeReason || "No reason provided")
+          .setFooter({ text: BRAND_FOOTER })
+      ]
+    })
+    .catch(() => null);
+
+  await enforceReadOnlyMediaPost(thread);
+  await thread.setLocked(true).catch(() => null);
 };
 
 const parseModalSchema = (value: unknown): ModalSchema | null => {
@@ -315,10 +956,15 @@ const buildPanelEmbed = async (panelId: string) => {
   if (!panel) {
     throw new Error("panel_not_found");
   }
+  const topBanner = new EmbedBuilder().setColor(PRIMARY_EMBED_COLOR).setImage(`attachment://${PANEL_TOP_BANNER_NAME}`);
   const embed = new EmbedBuilder()
     .setTitle(panel.title)
     .setDescription(panel.description)
+    .setColor(PRIMARY_EMBED_COLOR)
     .setFooter({ text: BRAND_FOOTER });
+  const bottomBanner = new EmbedBuilder()
+    .setColor(PRIMARY_EMBED_COLOR)
+    .setImage(`attachment://${PANEL_BOTTOM_BANNER_NAME}`);
   panel.categories
     .filter((link) => link.enabled && link.category.enabled)
     .forEach((link) => {
@@ -338,11 +984,52 @@ const buildPanelEmbed = async (panelId: string) => {
     .setPlaceholder("Select a category")
     .addOptions(options);
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-  return { panel, embed, components: [row] };
+  const files = [
+    new AttachmentBuilder(getAssetFilePath(PANEL_TOP_BANNER_NAME), { name: PANEL_TOP_BANNER_NAME }),
+    new AttachmentBuilder(getAssetFilePath(PANEL_BOTTOM_BANNER_NAME), { name: PANEL_BOTTOM_BANNER_NAME })
+  ];
+  return { panel, embeds: [topBanner, embed, bottomBanner], components: [row], files };
+};
+
+const getHierarchyVisibleSupportRoleIds = async (
+  guild: import("discord.js").Guild,
+  guildId: string,
+  teamRoleIds: string[]
+) => {
+  const uniqueTeamRoleIds = [...new Set(teamRoleIds)];
+  if (uniqueTeamRoleIds.length === 0) {
+    return uniqueTeamRoleIds;
+  }
+
+  const [allSupportRoles, guildRoles] = await Promise.all([
+    prisma.supportTeamRole.findMany({
+      where: { team: { guildId } },
+      select: { roleId: true }
+    }),
+    guild.roles.fetch()
+  ]);
+
+  const allSupportRoleIds = [...new Set(allSupportRoles.map((entry) => entry.roleId))];
+  const teamRolePositions = uniqueTeamRoleIds
+    .map((roleId) => guildRoles.get(roleId)?.position)
+    .filter((position): position is number => typeof position === "number");
+
+  if (teamRolePositions.length === 0) {
+    return uniqueTeamRoleIds;
+  }
+
+  const teamHighestPosition = Math.max(...teamRolePositions);
+  const hierarchyRoleIds = allSupportRoleIds.filter((roleId) => {
+    const position = guildRoles.get(roleId)?.position;
+    return typeof position === "number" && position >= teamHighestPosition;
+  });
+
+  return [...new Set([...uniqueTeamRoleIds, ...hierarchyRoleIds])];
 };
 
 const buildPermissionOverwrites = async (guildId: string, userId: string, supportTeamId: string) => {
   const guild = await client.guilds.fetch(guildId);
+  const botMemberId = guild.members.me?.id || client.user?.id || null;
   const team = await prisma.supportTeam.findFirst({
     where: { id: supportTeamId },
     include: { roles: true }
@@ -350,35 +1037,68 @@ const buildPermissionOverwrites = async (guildId: string, userId: string, suppor
   if (!team) {
     throw new Error("team_not_found");
   }
-  const overwrites = [
+  const visibleSupportRoleIds = await getHierarchyVisibleSupportRoleIds(
+    guild,
+    guildId,
+    team.roles.map((role) => role.roleId)
+  );
+  const overwriteById = new Map<
+    string,
     {
-      id: guild.roles.everyone.id,
-      deny: [PermissionsBitField.Flags.ViewChannel]
-    },
-    {
-      id: userId,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ]
+      id: string;
+      allow?: bigint[];
+      deny?: bigint[];
     }
-  ];
-  team.roles.forEach((role) => {
-    overwrites.push({
-      id: role.roleId,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ]
-    });
+  >();
+
+  overwriteById.set(guild.roles.everyone.id, {
+    id: guild.roles.everyone.id,
+    deny: [PermissionsBitField.Flags.ViewChannel]
   });
+
+  const upsertAllowOverwrite = (id: string, allow: bigint[]) => {
+    const existing = overwriteById.get(id);
+    const mergedAllow = new Set([...(existing?.allow || []), ...allow]);
+    const mergedDeny = new Set(existing?.deny || []);
+    overwriteById.set(id, {
+      id,
+      allow: [...mergedAllow],
+      deny: [...mergedDeny]
+    });
+  };
+
+  if (botMemberId) {
+    upsertAllowOverwrite(botMemberId, [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory,
+      PermissionsBitField.Flags.ManageChannels,
+      PermissionsBitField.Flags.ManageMessages
+    ]);
+  }
+
+  upsertAllowOverwrite(userId, [
+    PermissionsBitField.Flags.ViewChannel,
+    PermissionsBitField.Flags.SendMessages,
+    PermissionsBitField.Flags.ReadMessageHistory
+  ]);
+
+  visibleSupportRoleIds.forEach((roleId) => {
+    upsertAllowOverwrite(roleId, [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]);
+  });
+
+  const overwrites = [
+    ...overwriteById.values()
+  ];
   return { overwrites, team };
 };
 
 const publishPanel = async (panelId: string) => {
-  const { panel, embed, components } = await buildPanelEmbed(panelId);
+  const { panel, embeds, components, files } = await buildPanelEmbed(panelId);
   const guild = await client.guilds.fetch(panel.guildId);
   const channel = await guild.channels.fetch(panel.channelId);
   if (!channel || channel.type !== ChannelType.GuildText) {
@@ -387,11 +1107,11 @@ const publishPanel = async (panelId: string) => {
   if (panel.messageId) {
     const message = await channel.messages.fetch(panel.messageId).catch(() => null);
     if (message) {
-      await message.edit({ embeds: [embed], components });
+      await message.edit({ embeds, components, files });
       return;
     }
   }
-  const message = await channel.send({ embeds: [embed], components });
+  const message = await channel.send({ embeds, components, files });
   await prisma.ticketPanel.update({
     where: { id: panel.id },
     data: { messageId: message.id }
@@ -489,6 +1209,15 @@ const buildCloseRequestButtons = (ticketId: string, disabled = false) => {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(accept, deny);
 };
 
+const isTicketAutocloseExcluded = async (ticketId: string) => {
+  const latest = await prisma.ticketEvent.findFirst({
+    where: { ticketId, type: { in: ["AUTOCLOSE_EXCLUDE", "AUTOCLOSE_INCLUDE"] } },
+    orderBy: { createdAt: "desc" },
+    select: { type: true }
+  });
+  return latest?.type === "AUTOCLOSE_EXCLUDE";
+};
+
 const applyClaimedPermissions = async (ticketId: string, claimedById: string) => {
   const ticket = await prisma.ticket.findFirst({
     where: { id: ticketId },
@@ -501,8 +1230,17 @@ const applyClaimedPermissions = async (ticketId: string, claimedById: string) =>
   if (!channel || channel.type !== ChannelType.GuildText) {
     return;
   }
-  for (const role of ticket.supportTeam.roles) {
-    await channel.permissionOverwrites.edit(role.roleId, {
+  const guild = await client.guilds.fetch(ticket.guildId).catch(() => null);
+  if (!guild) {
+    return;
+  }
+  const visibleSupportRoleIds = await getHierarchyVisibleSupportRoleIds(
+    guild,
+    ticket.guildId,
+    ticket.supportTeam.roles.map((role) => role.roleId)
+  );
+  for (const roleId of visibleSupportRoleIds) {
+    await channel.permissionOverwrites.edit(roleId, {
       ViewChannel: true,
       ReadMessageHistory: true,
       SendMessages: false
@@ -520,12 +1258,28 @@ const applyClaimedPermissions = async (ticketId: string, claimedById: string) =>
   });
 };
 
+const userHasTicketBlacklistRole = async (guildId: string, userId: string) => {
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    return false;
+  }
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) {
+    return false;
+  }
+  return member.roles.cache.has(TICKET_BLACKLIST_ROLE_ID);
+};
+
 const createTicket = async (
   guildId: string,
   userId: string,
   category: { id: string; name: string; supportTeamId: string; parentChannelId: string | null },
   modalData?: Record<string, string>
 ) => {
+  if (await userHasTicketBlacklistRole(guildId, userId)) {
+    throw new Error("ticket_blacklisted_role");
+  }
+
   const { overwrites, team } = await buildPermissionOverwrites(guildId, userId, category.supportTeamId);
   const ticketId = randomUUID();
   const guild = await client.guilds.fetch(guildId);
@@ -564,10 +1318,11 @@ const createTicket = async (
       .setStyle(ButtonStyle.Danger)
   );
   const embed = new EmbedBuilder()
-    .setTitle(ticketLabel)
+    .setTitle(buildTicketTitle(ticketLabel))
     .setDescription(
       "Please send your issue details so the team can help quickly.\n\nThis ticket auto-closes after 48 hours of inactivity and will be closed if there is no reply within the first 30 minutes."
     )
+    .setColor(PRIMARY_EMBED_COLOR)
     .setFooter({ text: BRAND_FOOTER });
   const roleMentions = team.roles.map((role) => `<@&${role.roleId}>`).join(" ");
   await channel.send({
@@ -638,6 +1393,36 @@ const userHasTeamRole = (roleIds: string[], ticket: Awaited<ReturnType<typeof ge
   }
   const teamRoles = ticket.supportTeam.roles.map((role) => role.roleId);
   return roleIds.some((roleId) => teamRoles.includes(roleId));
+};
+
+const getInteractionRoleIds = (interaction: ChatInputCommandInteraction): string[] => {
+  const member = interaction.member;
+  if (!member || typeof member !== "object" || !("roles" in member)) {
+    return [];
+  }
+
+  const rolesValue = member.roles as unknown;
+  if (Array.isArray(rolesValue)) {
+    return rolesValue.filter((value): value is string => typeof value === "string");
+  }
+
+  if (
+    rolesValue &&
+    typeof rolesValue === "object" &&
+    "cache" in rolesValue
+  ) {
+    const cacheValue = (rolesValue as { cache?: unknown }).cache;
+    if (
+      cacheValue &&
+      typeof cacheValue === "object" &&
+      "map" in cacheValue &&
+      typeof (cacheValue as { map?: unknown }).map === "function"
+    ) {
+      return (cacheValue as { map: <T>(fn: (value: { id: string }) => T) => T[] }).map((role) => role.id);
+    }
+  }
+
+  return [];
 };
 
 const userHasSupportRole = async (guildId: string, roleIds: string[]) => {
@@ -732,7 +1517,16 @@ const canManageTicket = async (
   if (!ticket.claimedById) {
     return true;
   }
-  return ticket.claimedById === userId;
+  if (ticket.claimedById === userId) {
+    return true;
+  }
+
+  const claimerBypassRoleIds = await getClaimerBypassRoleIdsForGuild(guildId);
+  if (claimerBypassRoleIds.some((roleId) => roleIds.includes(roleId))) {
+    return true;
+  }
+
+  return false;
 };
 
 const switchTicketToTeam = async (
@@ -769,9 +1563,30 @@ const switchTicketToTeam = async (
 
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
   if (channel && channel.type === ChannelType.GuildText) {
-    const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
-    await channel.permissionOverwrites.set(overwrites);
-    await channel.setParent(category.parentChannelId || null).catch(() => null);
+    await enqueueChannelMutation(channel.id, async () => {
+      const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, category.supportTeamId);
+      await channel.permissionOverwrites.set(overwrites);
+      await channel.setParent(category.parentChannelId || null, { lockPermissions: false }).catch(() => null);
+      try {
+        await channel.permissionOverwrites.edit(ticket.ownerId, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true
+        });
+      } catch (error) {
+        console.warn("[ticket-switch] Failed to re-apply owner permissions", {
+          ticketId: ticket.id,
+          guildId: ticket.guildId,
+          channelId: channel.id,
+          ownerId: ticket.ownerId,
+          actorId,
+          toTeamId: teamId,
+          toCategoryId: category.id,
+          error
+        });
+        throw error;
+      }
+    });
     const switchedTeam = await prisma.supportTeam.findFirst({
       where: { id: teamId },
       include: { roles: true }
@@ -835,12 +1650,39 @@ const registerCommands = async () => {
       .setName("unclaim")
       .setDescription("Unclaim the current ticket"),
     new SlashCommandBuilder()
+      .setName("forceunclaim")
+      .setDescription("Force unclaim the current ticket (superusers/admin only)"),
+    new SlashCommandBuilder()
       .setName("close")
       .setDescription("Close the current ticket")
       .addStringOption((option) =>
         option
           .setName("reason")
           .setDescription("Optional reason for closing the ticket")
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName("add")
+      .setDescription("Add an account to the current ticket")
+      .addUserOption((option) =>
+        option
+          .setName("account")
+          .setDescription("Account to add")
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName("remove")
+      .setDescription("Remove an account or role from the current ticket")
+      .addUserOption((option) =>
+        option
+          .setName("account")
+          .setDescription("Account to remove")
+          .setRequired(false)
+      )
+      .addRoleOption((option) =>
+        option
+          .setName("role")
+          .setDescription("Role to remove")
           .setRequired(false)
       ),
     new SlashCommandBuilder()
@@ -887,6 +1729,14 @@ const registerCommands = async () => {
           .setName("reason")
           .setDescription("Reason for requesting closure")
           .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName("autoclose")
+      .setDescription("Manage inactivity auto-close behavior")
+      .addSubcommand((sub) =>
+        sub
+          .setName("exclude")
+          .setDescription("Exclude this ticket from inactivity auto-close")
       )
   
   ].map((command) => command.toJSON());
@@ -902,6 +1752,59 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const isImageUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    const pathname = parsed.pathname.toLowerCase();
+    if (/\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(pathname)) {
+      return true;
+    }
+
+    const format = parsed.searchParams.get("format")?.toLowerCase() || "";
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"].includes(format)) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+const renderTranscriptContentHtml = (raw: string) => {
+  const value = raw || "";
+  const urlPattern = /https?:\/\/[^\s<>'"]+/g;
+  const parts: string[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = urlPattern.exec(value)) !== null) {
+    const start = match.index;
+    const url = match[0];
+    const textChunk = value.slice(cursor, start);
+    if (textChunk) {
+      parts.push(escapeHtml(textChunk).replaceAll("\n", "<br />"));
+    }
+
+    const safeUrl = escapeHtml(url);
+    if (isImageUrl(url)) {
+      parts.push(
+        `<div class="attachment"><a class="link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a><img src="${safeUrl}" alt="Attachment" loading="lazy" /></div>`
+      );
+    } else {
+      parts.push(`<a class="link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`);
+    }
+
+    cursor = start + url.length;
+  }
+
+  if (cursor < value.length) {
+    parts.push(escapeHtml(value.slice(cursor)).replaceAll("\n", "<br />"));
+  }
+
+  return parts.join("");
+};
+
 const buildTranscriptHtml = (
   ticketLabel: string,
   lines: Array<{ timestamp: number; author: string; content: string }>
@@ -912,7 +1815,7 @@ const buildTranscriptHtml = (
       return `
       <article class="msg">
         <div class="meta">${escapeHtml(line.author)} • ${escapeHtml(time)}</div>
-        <div class="content">${escapeHtml(line.content || "(no text content)")}</div>
+        <div class="content">${renderTranscriptContentHtml(line.content || "(no text content)")}</div>
       </article>`;
     })
     .join("\n");
@@ -922,38 +1825,69 @@ const buildTranscriptHtml = (
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ticket Transcript ${escapeHtml(ticketLabel)}</title>
+    <title>${escapeHtml(APP_NAME)} • Ticket Transcript ${escapeHtml(ticketLabel)}</title>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: dark;
         font-family: "Inter", "Segoe UI", sans-serif;
-        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-        color: #0f172a;
+        color: #e2e8f0;
       }
-      body { margin: 0; padding: 24px; }
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: transparent;
+        color: #e2e8f0;
+      }
+      body { padding: 24px; }
       .wrap { max-width: 960px; margin: 0 auto; }
       .card {
-        background: #fff;
-        border: 1px solid #dbe4ef;
+        background: #0f172a;
+        border: 1px solid #334155;
         border-radius: 14px;
         padding: 18px;
       }
       h1 { margin: 0 0 12px; font-size: 24px; }
       .msg {
-        border: 1px solid #e2e8f0;
+        border: 1px solid #334155;
         border-radius: 10px;
         padding: 10px 12px;
-        background: #f8fafc;
+        background: #1e293b;
         margin-bottom: 10px;
       }
-      .meta { font-size: 12px; color: #475569; margin-bottom: 6px; }
+      .meta { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
       .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+      .link { color: #93c5fd; text-decoration: underline; }
+      .attachment { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+      .attachment img {
+        max-width: min(100%, 560px);
+        max-height: 420px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        object-fit: contain;
+        background: #0b1220;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          color-scheme: light;
+          color: #0f172a;
+        }
+        html, body {
+          background: transparent;
+          color: #0f172a;
+        }
+        .card { background: #ffffff; border-color: #dbe4ef; }
+        .msg { background: #f8fafc; border-color: #e2e8f0; }
+        .meta { color: #475569; }
+        .link { color: #1d4ed8; }
+        .attachment img { border-color: #dbe4ef; background: #ffffff; }
+      }
     </style>
   </head>
   <body>
     <main class="wrap">
       <section class="card">
-        <h1>Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
+        <h1>${escapeHtml(APP_NAME)} • Ticket Transcript • ${escapeHtml(ticketLabel)}</h1>
         ${rows || "<p>No messages captured.</p>"}
       </section>
     </main>
@@ -966,7 +1900,7 @@ const getDashboardTranscriptUrl = (ticketId: string) => {
     process.env.DASHBOARD_ORIGIN ||
     process.env.DASHBOARD_URL ||
     process.env.PUBLIC_DASHBOARD_URL ||
-    "http://localhost:5173"
+    "https://RAIL.m4rv1n.dev"
   ).trim();
   if (!base) {
     return "";
@@ -1001,8 +1935,33 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       data: normalizedReason ? { reason: normalizedReason } : undefined
     }
   });
+
+  await finalizeTicketMediaPost({
+    id: ticket.id,
+    guildId: ticket.guildId,
+    channelId: ticket.channelId,
+    ticketNumber: ticket.ticketNumber,
+    closeReason: normalizedReason || null
+  }).catch((error) => {
+    console.warn("[media-post] Failed to finalize media post", {
+      ticketId,
+      channelId: ticket.channelId,
+      error
+    });
+  });
+
   const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
-  const ticketLabel = getTicketDisplayLabel(ticket);
+  const ticketName = await resolveTicketName(ticket);
+  const ticketLabel = buildTicketTitle(ticketName);
+
+  await notifyTicketOwnerClosed({
+    ownerId: ticket.ownerId,
+    ticketName,
+    closedById: actorId,
+    closedAt,
+    reason: normalizedReason
+  });
+
   if (channel && channel.type === ChannelType.GuildText) {
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     const transcriptLines: Array<{ timestamp: number; author: string; content: string }> = [];
@@ -1041,6 +2000,7 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
       const closedByValue = actorId === "system" ? "System" : `<@${actorId}>`;
       const transcriptUrl = getDashboardTranscriptUrl(ticket.id);
       const embed = new EmbedBuilder()
+        .setColor(PRIMARY_EMBED_COLOR)
         .setTitle(`${ticketLabel} Closed`)
         .setDescription("Ticket transcript has been logged. Use the button below to view it in the dashboard.")
         .addFields(
@@ -1067,19 +2027,37 @@ const closeTicket = async (ticketId: string, actorId: string, reason?: string) =
         components
       });
     }
-    await channel.permissionOverwrites.edit(ticket.ownerId, {
-      SendMessages: false
-    });
-    ticket.supportTeam.roles.forEach((role) => {
-      channel.permissionOverwrites.edit(role.roleId, {
+    try {
+      await channel.permissionOverwrites.edit(ticket.ownerId, {
         SendMessages: false
       });
-    });
+    } catch (error) {
+      if (isDiscordApiErrorCode(error, 10003)) {
+        return;
+      }
+      if (!isDiscordApiErrorCode(error, 10009)) {
+        throw error;
+      }
+    }
+
+    await Promise.allSettled(
+      ticket.supportTeam.roles.map((role) =>
+        channel.permissionOverwrites.edit(role.roleId, {
+          SendMessages: false
+        }).catch((error) => {
+          if (!isIgnorableOverwriteError(error)) {
+            throw error;
+          }
+        })
+      )
+    );
+
     await channel.delete("Ticket closed").catch(() => null);
   }
 };
 
 client.on("interactionCreate", async (interaction) => {
+  try {
   if (interaction.isAutocomplete()) {
     if (interaction.commandName === "switchcategory") {
       await autocompleteTeams(interaction);
@@ -1112,11 +2090,25 @@ client.on("interactionCreate", async (interaction) => {
       await sourceInteraction.showModal(buildTicketModal(categoryId, modalSchema));
       return;
     }
-    const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
-    await sourceInteraction.reply({
-      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
-      flags: MessageFlags.Ephemeral
-    });
+    try {
+      const ticket = await createTicket(sourceInteraction.guildId, sourceInteraction.user.id, category);
+      await sourceInteraction.reply({
+        content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+        flags: MessageFlags.Ephemeral
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        await sourceInteraction.reply({
+          content: "You are not allowed to open tickets.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      await sourceInteraction.reply({
+        content: "Unable to create ticket right now.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
   };
 
   if (interaction.isChatInputCommand()) {
@@ -1310,6 +2302,174 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
     }
+
+    if (interaction.commandName === "forceunclaim") {
+      await interaction.deferReply();
+
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.editReply({ content: "Use this in a ticket channel." });
+        return;
+      }
+
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      const isAdministrator = member?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
+
+      if (!requesterIsSuperuser && !isAdministrator) {
+        await interaction.editReply({
+          content: `<@${interaction.user.id}> only superusers or administrators can force unclaim a ticket.`
+        });
+        return;
+      }
+
+      if (!ticket.claimedById) {
+        await interaction.editReply({ content: "This ticket is not currently claimed." });
+        return;
+      }
+
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: {
+          claimedById: null,
+          status: TicketStatus.Open,
+          lastActivityAt: new Date()
+        }
+      });
+
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (channel && channel.type === ChannelType.GuildText) {
+        const { overwrites } = await buildPermissionOverwrites(ticket.guildId, ticket.ownerId, ticket.supportTeamId);
+        await channel.permissionOverwrites.set(overwrites);
+      }
+
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "FORCE_UNCLAIM",
+          actorId: interaction.user.id,
+          data: { previousClaimerId: ticket.claimedById }
+        }
+      });
+
+      await interaction.editReply({
+        content: requesterIsSuperuser
+          ? "Unclaim forced by superuser."
+          : "Unclaim forced by administrator."
+      });
+      return;
+    }
+
+    if (["add", "remove"].includes(interaction.commandName)) {
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+
+      const targetUser = interaction.options.getUser("account", false);
+      const targetRole = interaction.options.getRole("role", false);
+      if (!targetUser && !targetRole) {
+        await interaction.reply({
+          content: "Provide either an account or a role to remove.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      if (targetUser && targetRole) {
+        await interaction.reply({
+          content: "Please provide only one target: either account or role.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildText) {
+        await interaction.reply({ content: "Ticket channel not found.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.commandName === "remove" && targetUser && targetUser.id === ticket.ownerId) {
+        await interaction.reply({ content: "You cannot remove the ticket creator from this ticket.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.commandName === "add") {
+        if (!targetUser) {
+          await interaction.reply({ content: "Provide an account to add.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await channel.permissionOverwrites.edit(targetUser.id, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "ADD_USER",
+            actorId: interaction.user.id,
+            data: { userId: targetUser.id }
+          }
+        });
+        await prisma.ticket.update({
+          where: { id: ticket.id },
+          data: { lastActivityAt: new Date() }
+        });
+        await interaction.reply({ content: `<@${targetUser.id}> has been added to the ticket.` });
+        return;
+      }
+
+      if (targetUser) {
+        await channel.permissionOverwrites.edit(targetUser.id, {
+          ViewChannel: false,
+          ReadMessageHistory: false,
+          SendMessages: false
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "REMOVE_USER",
+            actorId: interaction.user.id,
+            data: { userId: targetUser.id }
+          }
+        });
+      } else if (targetRole) {
+        await channel.permissionOverwrites.edit(targetRole.id, {
+          ViewChannel: false,
+          ReadMessageHistory: false,
+          SendMessages: false
+        });
+        await prisma.ticketEvent.create({
+          data: {
+            ticketId: ticket.id,
+            type: "REMOVE_ROLE",
+            actorId: interaction.user.id,
+            data: { roleId: targetRole.id }
+          }
+        });
+      }
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { lastActivityAt: new Date() }
+      });
+      await interaction.reply({
+        content: targetUser
+          ? `<@${targetUser.id}> has been removed from the ticket.`
+          : `<@&${targetRole!.id}> has been removed from the ticket.`
+      });
+      return;
+    }
+
     if (interaction.commandName === "panel") {
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
@@ -1366,7 +2526,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `<@${interaction.user.id}> this ticket must be claimed before switching category.` });
         return;
       }
-      if (ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
+      if (ticket.claimedById && ticket.claimedById !== interaction.user.id && requesterIsSuperuser) {
         auditSuperuserBypass({
           action: "ticket.switchcategory",
           userId: interaction.user.id,
@@ -1421,6 +2581,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const reason = interaction.options.getString("reason", true).trim();
       const embed = new EmbedBuilder()
+        .setColor(PRIMARY_EMBED_COLOR)
         .setTitle("Ticket Closure Requested")
         .setDescription(`This ticket has been marked for closure review by <@${interaction.user.id}>.`)
         .addFields(
@@ -1436,6 +2597,49 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [embed],
         components: [buildCloseRequestButtons(ticket.id)]
       });
+      return;
+    }
+
+    if (interaction.commandName === "autoclose") {
+      const subcommand = interaction.options.getSubcommand(false);
+      if (subcommand !== "exclude") {
+        await interaction.reply({ content: "Unsupported autoclose action.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      const roleIds = member?.roles.cache.map((role) => role.id) || [];
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+
+      const alreadyExcluded = await isTicketAutocloseExcluded(ticket.id);
+      if (alreadyExcluded) {
+        await interaction.reply({ content: "This ticket is already excluded from inactivity auto-close.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await prisma.ticketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          type: "AUTOCLOSE_EXCLUDE",
+          actorId: interaction.user.id
+        }
+      });
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { lastActivityAt: new Date() }
+      });
+
+      await interaction.reply({ content: "Auto-close exclusion enabled for this ticket." });
       return;
     }
   }
@@ -1467,11 +2671,25 @@ client.on("interactionCreate", async (interaction) => {
     for (const field of modalSchema.fields) {
       modalData[field.id] = interaction.fields.getTextInputValue(field.id);
     }
-    const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
-    await interaction.reply({
-      content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
-      flags: MessageFlags.Ephemeral
-    });
+    try {
+      const ticket = await createTicket(interaction.guildId, interaction.user.id, category, modalData);
+      await interaction.reply({
+        content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
+        flags: MessageFlags.Ephemeral
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        await interaction.reply({
+          content: "You are not allowed to open tickets.",
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      await interaction.reply({
+        content: "Unable to create ticket.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
     return;
   }
 
@@ -1545,12 +2763,20 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
       const ticket = await createTicket(interaction.guildId, interaction.user.id, category);
       const refreshed = await buildPanelEmbed(panel.id);
-      await interaction.editReply({ embeds: [refreshed.embed], components: refreshed.components });
+      await interaction.editReply({ embeds: refreshed.embeds, components: refreshed.components, files: refreshed.files });
       await interaction.followUp({
         content: `${getTicketDisplayLabel(ticket)} created: <#${ticket.channelId}>.`,
         flags: MessageFlags.Ephemeral
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "ticket_blacklisted_role") {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({ content: "You are not allowed to open tickets.", flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ content: "You are not allowed to open tickets.", flags: MessageFlags.Ephemeral });
+        }
+        return;
+      }
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: "Unable to create ticket.", flags: MessageFlags.Ephemeral });
       } else {
@@ -1691,43 +2917,286 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isChatInputCommand() && interaction.commandName === "rename") {
-    const ticket = await getTicketByChannel(interaction.channelId);
-    if (!ticket) {
-      await interaction.reply({ content: "Use this in a ticket channel.", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const member = await interaction.guild?.members.fetch(interaction.user.id);
-    const roleIds = member?.roles.cache.map((role) => role.id) || [];
-    const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
-    if (!canManage) {
-      await interaction.reply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
-      return;
-    }
-    const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
-    if (!channel || channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: "Ticket channel not found." });
-      return;
-    }
-    const customNameRaw = interaction.options.getString("name")?.trim() || "";
-    const customName = customNameRaw
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    const baseName = getTicketDisplayLabel(ticket);
-    const nextName = customName || baseName;
-    await channel.setName(nextName);
-    await prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } });
-    await prisma.ticketEvent.create({
-      data: {
-        ticketId: ticket.id,
-        type: "RENAME",
-        actorId: interaction.user.id,
-        data: { name: nextName }
+    try {
+      await interaction.deferReply();
+      const ticket = await getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        await interaction.editReply({ content: "Use this in a ticket channel." });
+        return;
       }
-    });
-    await interaction.reply({ content: `Ticket renamed to **${nextName}**.` });
+      const requesterIsSuperuser = hasSuperuserBypass(interaction.user.id);
+      let roleIds = getInteractionRoleIds(interaction);
+      if (!requesterIsSuperuser && roleIds.length === 0) {
+        const member = await withTimeout(
+          interaction.guild?.members.fetch(interaction.user.id) ?? Promise.resolve(null),
+          10000,
+          "rename_member_fetch_timeout"
+        );
+        roleIds = member?.roles.cache.map((role) => role.id) || [];
+      }
+      const canManage = await canManageTicket(interaction.user.id, ticket.guildId, roleIds, ticket);
+      if (!canManage) {
+        await interaction.editReply({ content: `<@${interaction.user.id}> only the current claimer can manage this ticket.` });
+        return;
+      }
+      const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildText) {
+        await interaction.editReply({ content: "Ticket channel not found." });
+        return;
+      }
+
+      const customNameRaw = interaction.options.getString("name")?.trim() || "";
+      const customName = customNameRaw
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      const baseName = getTicketDisplayLabel(ticket);
+      const nextName = customName || baseName;
+
+      if (channel.name === nextName) {
+        await interaction.editReply({ content: `Ticket is already named **${nextName}**.` });
+        return;
+      }
+
+      if (renameInFlightByChannel.has(channel.id)) {
+        await interaction.editReply({ content: "A rename is already being processed for this ticket. Please wait a few seconds and try again." });
+        return;
+      }
+
+      const now = Date.now();
+      const lastRenameAt = lastRenameAtByChannel.get(channel.id) || 0;
+      const remainingRenameWaitMs = Math.max(0, RENAME_MIN_INTERVAL_MS - (now - lastRenameAt));
+
+      let renameDeferredInBackground = false;
+      let renameCompletedImmediately = false;
+
+      const persistRenameEvent = async () => {
+        await withTimeout(
+          prisma.ticketEvent.create({
+            data: {
+              ticketId: ticket.id,
+              type: "RENAME",
+              actorId: interaction.user.id,
+              data: { name: nextName }
+            }
+          }),
+          6000,
+          "rename_event_create_timeout"
+        );
+      };
+
+      const syncRenameSideEffects = async () => {
+        await Promise.allSettled([
+          persistRenameEvent(),
+          syncTicketControlEmbedTitle(channel, ticket.id, nextName),
+          syncTicketMediaPostTitle(ticket.id, nextName),
+          syncTicketMediaPostStarterMessage(ticket.id, nextName)
+        ]);
+      };
+
+      const queueBackgroundRename = (reason: string, waitMs = 0) => {
+        renameDeferredInBackground = true;
+        console.info("[command] rename deferred to background", {
+          ticketId: ticket.id,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          userId: interaction.user.id,
+          nextName,
+          reason,
+          waitMs
+        });
+
+        const backgroundPromise = enqueueChannelMutation(channel.id, async () => {
+          if (waitMs > 0) {
+            await sleep(waitMs);
+          }
+          lastRenameAtByChannel.set(channel.id, Date.now());
+          await renameTextChannelWithRetry(channel, nextName, { maxAttempts: 6, perAttemptTimeoutMs: 45000 });
+        })
+          .then(() => {
+            console.info("[command] rename background success", {
+              ticketId: ticket.id,
+              guildId: interaction.guildId,
+              channelId: interaction.channelId,
+              userId: interaction.user.id,
+              nextName
+            });
+
+            void syncRenameSideEffects().catch((error) => {
+              console.warn("[command] rename background side-effects failed", {
+                ticketId: ticket.id,
+                guildId: interaction.guildId,
+                channelId: interaction.channelId,
+                userId: interaction.user.id,
+                nextName,
+                error
+              });
+            });
+          })
+          .catch((backgroundError) => {
+            if (backgroundError instanceof Error && backgroundError.message === "rename_channel_unknown") {
+              console.info("[command] rename background stopped: channel no longer exists", {
+                ticketId: ticket.id,
+                guildId: interaction.guildId,
+                channelId: interaction.channelId,
+                userId: interaction.user.id,
+                nextName
+              });
+              return;
+            }
+            console.warn("[command] rename background failed", {
+              ticketId: ticket.id,
+              guildId: interaction.guildId,
+              channelId: interaction.channelId,
+              userId: interaction.user.id,
+              nextName,
+              message: backgroundError instanceof Error ? backgroundError.message : "unknown_error",
+              error: backgroundError
+            });
+          })
+          .finally(() => {
+            const active = renameInFlightByChannel.get(channel.id);
+            if (active === backgroundPromise) {
+              renameInFlightByChannel.delete(channel.id);
+            }
+          });
+
+        renameInFlightByChannel.set(channel.id, backgroundPromise);
+      };
+
+      if (channelMutationQueue.has(channel.id)) {
+        queueBackgroundRename("channel_mutation_queue_busy", remainingRenameWaitMs);
+      } else if (remainingRenameWaitMs > 0) {
+        queueBackgroundRename("rename_rate_limit", remainingRenameWaitMs);
+      } else {
+        try {
+          lastRenameAtByChannel.set(channel.id, Date.now());
+          await withTimeout(
+            enqueueChannelMutation(channel.id, () =>
+              renameTextChannelWithRetry(channel, nextName, { maxAttempts: 1, perAttemptTimeoutMs: 7000 })
+            ),
+            9000,
+            "rename_channel_quick_attempt_timeout"
+          );
+          renameCompletedImmediately = true;
+        } catch (error) {
+          if (error instanceof Error) {
+            if (error.message === "rename_channel_unknown" || error.message === "rename_channel_missing_access") {
+              throw error;
+            }
+            if (
+              error.message.startsWith("rename_channel_refetch_timeout_attempt_") ||
+              error.message === "rename_channel_quick_attempt_timeout" ||
+              error.message.startsWith("rename_channel_setname_timeout_attempt_")
+            ) {
+              queueBackgroundRename(error.message);
+            } else {
+              throw error;
+            }
+          } else {
+            queueBackgroundRename("rename_quick_attempt_unknown_error");
+          }
+        }
+      }
+
+      await withTimeout(
+        prisma.ticket.update({ where: { id: ticket.id }, data: { lastActivityAt: new Date() } }),
+        10000,
+        "rename_ticket_update_timeout"
+      );
+      await interaction.editReply({
+        content: renameDeferredInBackground
+          ? `Rename request accepted for **${nextName}**. Discord is processing it in the background.`
+          : `Ticket renamed to **${nextName}**.`
+      });
+
+      if (renameCompletedImmediately) {
+        void syncRenameSideEffects().catch((error) => {
+          console.warn("[command] rename side-effects failed", {
+            ticketId: ticket.id,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            userId: interaction.user.id,
+            nextName,
+            error
+          });
+        });
+      }
+    } catch (error) {
+      let message = "Unable to rename this ticket right now.";
+      if (error instanceof Error) {
+        if (error.message === "rename_member_fetch_timeout") {
+          message = "Rename timed out while checking member permissions. Please try again.";
+        } else if (error.message === "rename_channel_unknown") {
+          message = "Rename failed because this ticket channel no longer exists.";
+        } else if (error.message === "rename_channel_missing_access") {
+          message = "Rename failed because the bot no longer has access to this ticket channel.";
+        } else if (error.message.startsWith("rename_channel_setname_timeout_attempt_")) {
+          message = "Rename timed out while updating the channel name. Please try again.";
+        } else if (error.message === "rename_channel_quick_attempt_timeout") {
+          message = "Discord is slow right now. Rename request has been queued in background.";
+        } else if (error.message.startsWith("rename_channel_refetch_timeout_attempt_")) {
+          message = "Rename timed out while verifying channel state. Please try again.";
+        } else if (error.message === "rename_ticket_update_timeout") {
+          message = "Rename timed out while writing ticket metadata. The channel may already be renamed.";
+        } else if (error.message.includes("Missing Permissions")) {
+          message = "Rename failed due to missing permissions for the bot in this channel.";
+        }
+      }
+      console.warn("[command] rename failed", {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        message: error instanceof Error ? error.message : "unknown_error",
+        error
+      });
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: message });
+        } else {
+          await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+        }
+      } catch {
+        // no-op: avoid crashing interaction handler if response window already closed
+      }
+    }
     return;
+  }
+  } catch (error) {
+    console.error("[interaction] Unhandled interaction error", {
+      interactionType: interaction.type,
+      commandName: interaction.isChatInputCommand() ? interaction.commandName : undefined,
+      customId:
+        interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()
+          ? interaction.customId
+          : undefined,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user?.id,
+      error
+    });
+
+    if (interaction.isAutocomplete()) {
+      await interaction.respond([]).catch(() => null);
+      return;
+    }
+
+    if (!interaction.isRepliable()) {
+      return;
+    }
+
+    const fallbackMessage = "Something went wrong while processing that action. Please try again.";
+    if (interaction.deferred) {
+      await interaction.editReply({ content: fallbackMessage }).catch(() => null);
+      return;
+    }
+    if (interaction.replied) {
+      await interaction.followUp({ content: fallbackMessage, flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+
+    await interaction.reply({ content: fallbackMessage, flags: MessageFlags.Ephemeral }).catch(() => null);
   }
 });
 
@@ -1745,6 +3214,17 @@ client.on("messageCreate", async (message) => {
     where: { id: ticket.id },
     data: { lastActivityAt: new Date() }
   });
+
+  try {
+    await forwardMediaToTicketPost(ticket, message);
+  } catch (error) {
+    console.warn("[media-post] Failed to forward ticket media", {
+      ticketId: ticket.id,
+      channelId: message.channel.id,
+      messageId: message.id,
+      error
+    });
+  }
 });
 
 const startInactivityMonitor = () => {
@@ -1761,6 +3241,11 @@ const startInactivityMonitor = () => {
       }
     });
     for (const ticket of tickets) {
+      const excludedFromAutoclose = await isTicketAutocloseExcluded(ticket.id);
+      if (excludedFromAutoclose) {
+        continue;
+      }
+
       const last = ticket.lastActivityAt.getTime();
       if (now - last > closeMs) {
         await closeTicket(ticket.id, "system");
@@ -1787,6 +3272,19 @@ const startInactivityMonitor = () => {
 
 const internalApp = express();
 internalApp.use(express.json());
+internalApp.use((req, res, next) => {
+  const startedAt = Date.now();
+  const cfRay = String(req.headers["cf-ray"] || "");
+  const cfIp = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "");
+  const userAgent = String(req.headers["user-agent"] || "");
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    console.info(
+      `[bot-internal] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms) ip=${cfIp || "unknown"} cfRay=${cfRay || "none"} ua=${userAgent || "unknown"}`
+    );
+  });
+  next();
+});
 internalApp.post("/internal/panels/:id/sync", async (req, res) => {
   const secret = String(req.headers["x-internal-secret"] || "");
   if (!secret || secret !== process.env.BOT_INTERNAL_SECRET) {
@@ -1835,13 +3333,17 @@ internalApp.post("/internal/tickets/force-close-open", async (req, res) => {
 });
 
 const start = async () => {
-  const port = Number(process.env.INTERNAL_PORT || 3002);
+  const port = Number(process.env.PORT || process.env.INTERNAL_PORT || 3002);
   internalApp.listen(port, () => {
     console.log(`Bot internal server on ${port}`);
   });
   await registerCommands();
   await client.login(process.env.DISCORD_BOT_TOKEN);
+  setInterval(() => {
+    updateBotPresence();
+  }, 1000 * 60 * 10);
   startInactivityMonitor();
 };
 
 start();
+

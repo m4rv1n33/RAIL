@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "@rail/db";
-import { requireSession, requireStaff } from "../middleware/auth.js";
+import { requireManagementAccess, requireSession } from "../middleware/auth.js";
 import { z } from "zod";
 
 export const teamsRouter = Router();
@@ -10,7 +10,7 @@ const teamSchema = z.object({
   roleIds: z.array(z.string().min(1)).default([])
 });
 
-teamsRouter.get("/", requireSession, requireStaff, async (req, res) => {
+teamsRouter.get("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const teams = await prisma.supportTeam.findMany({
     where: { guildId },
@@ -19,7 +19,7 @@ teamsRouter.get("/", requireSession, requireStaff, async (req, res) => {
   res.json({ teams });
 });
 
-teamsRouter.post("/", requireSession, requireStaff, async (req, res) => {
+teamsRouter.post("/", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const input = teamSchema.parse(req.body);
   const team = await prisma.supportTeam.create({
@@ -35,7 +35,7 @@ teamsRouter.post("/", requireSession, requireStaff, async (req, res) => {
   res.json({ team });
 });
 
-teamsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
+teamsRouter.put("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const id = String(req.params.id || "");
   const input = teamSchema.parse(req.body);
@@ -55,7 +55,7 @@ teamsRouter.put("/:id", requireSession, requireStaff, async (req, res) => {
   res.json({ team });
 });
 
-teamsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
+teamsRouter.delete("/:id", requireSession, requireManagementAccess, async (req, res) => {
   const guildId = String(req.headers["x-guild-id"] || "");
   const id = String(req.params.id || "");
   const team = await prisma.supportTeam.findFirst({
@@ -80,3 +80,4 @@ teamsRouter.delete("/:id", requireSession, requireStaff, async (req, res) => {
   await prisma.supportTeam.delete({ where: { id } });
   res.json({ ok: true });
 });
+
