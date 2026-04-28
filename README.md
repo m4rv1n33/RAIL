@@ -148,6 +148,5 @@ Exact role IDs are configured in code and/or runtime settings for your deploymen
 
 ## Notes
 
-- Keep secrets out of source control.
 - Prefer webhook-based logging (`DISCORD_LOG_WEBHOOK_URL`) when available.
 - If panel publish fails, verify `BOT_INTERNAL_URL` and `BOT_INTERNAL_SECRET` on both API and bot.
