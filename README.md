@@ -1,118 +1,54 @@
 # RAIL Ticket System
 
-RAIL Ticket System is a TypeScript monorepo with three main apps:
-- API service for auth, settings, tickets metadata, and dashboard endpoints
-- Discord bot for ticket workflows, transcript generation, media backup forwarding, and command handling
-- Dashboard web app for teams, categories, panels, and transcripts management
+RAIL Ticket System is a TypeScript monorepo for Discord support operations.
+It combines:
 
-Branding used across the project:
-- RAIL Ticket System
-- Powered by RAIL, built by @m4rv1n_33
+- An Express API for OAuth, dashboard endpoints, settings, and admin tooling
+- A Discord bot for ticket lifecycle workflows and internal actions
+- A React dashboard for teams, categories, panels, transcripts, and GDPR actions
 
-## Repository layout
+## Monorepo structure
 
-- `apps/api` Express API
-- `apps/bot` Discord bot
-- `apps/dashboard` React + Vite dashboard
+- `apps/api` API service (Express)
+- `apps/bot` Discord bot service
+- `apps/dashboard` Dashboard app (React + Vite)
 - `packages/db` Prisma schema, migrations, and DB package
-- `packages/shared` shared types and validators
-- `data/guild-settings.json` guild level settings storage
+- `packages/shared` Shared validators/types used across apps
+- `data/guild-settings.json` Runtime guild settings cache
 
-## Prerequisites
+## Core features
+
+- Discord OAuth login + dashboard sessions
+- Team and category management
+- Ticket panel creation/publish and sync
+- Ticket lifecycle controls (claim, unclaim, force-unclaim, close, inactivity handling)
+- Transcript listing and detail view
+- GDPR admin tools and retention cleanup jobs
+- Internal API bridge between API and bot for panel publish / force-close actions
+
+## Requirements
 
 - Node.js 20+
 - npm 10+
-- MySQL compatible database for Prisma
-- A Discord application with bot + OAuth2 configured
+- MySQL-compatible database
+- Discord application (OAuth2 + bot)
 
-## Install
+## Quick start
+
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-## Environment setup
-
-Create env files for each app before running locally.
-
-### API (`apps/api/.env`)
-
-Required:
-- `PORT` (example `3001`)
-- `SESSION_SECRET`
-- `DASHBOARD_ORIGIN` (example `http://localhost:5173`)
-- `DISCORD_CLIENT_ID`
-- `DISCORD_CLIENT_SECRET`
-- `DISCORD_REDIRECT_URI` (example `http://localhost:3001/auth/callback`)
-- `DISCORD_BOT_TOKEN`
-
-Internal API bridge for panel publish and force close:
-- `BOT_INTERNAL_URL` (example `http://localhost:3002`)
-- `BOT_INTERNAL_SECRET`
-
-Optional:
-- `SUPERUSERS_JSON`
-- `DEV_BYPASS_USER_ID` (do not use in production)
-- `DISCORD_LOG_WEBHOOK_URL`
-- `DISCORD_LOG_CHANNEL_ID` (fallback when webhook fails)
-
-### Bot (`apps/bot/.env`)
-
-Required:
-- `DISCORD_BOT_TOKEN`
-- `DISCORD_APP_ID`
-- `DISCORD_GUILD_ID`
-
-Internal server:
-- `PORT` (or `INTERNAL_PORT`)
-- `BOT_INTERNAL_SECRET` (must match API)
-
-Dashboard transcript links:
-- `DASHBOARD_URL` or `PUBLIC_DASHBOARD_URL` or `DASHBOARD_ORIGIN`
-
-Optional:
-- `TRANSCRIPT_CHANNEL_ID`
-- `MEDIA_FORUM_CHANNEL_ID`
-- `ATTACHMENT_FORUM_CHANNEL_ID`
-- `ATTACHMENT_ARCHIVE_CHANNEL_ID`
-- `MEDIA_ARCHIVE_CHANNEL_ID`
-- `SUPERUSERS_JSON`
-- `DEV_BYPASS_USER_ID` (do not use in production)
-- `DISCORD_LOG_WEBHOOK_URL`
-- `DISCORD_LOG_CHANNEL_ID` (fallback when webhook fails)
-- `TEAM_AUTOCOMPLETE_CACHE_TTL_MS`
-- `ATTACHMENT_STORAGE_CACHE_TTL_MS`
-
-Note: the current bot code includes a hardcoded media backup channel id. Update or remove that before production if you need full env based control.
-
-### Dashboard (`apps/dashboard/.env`)
-
-Required:
-- `VITE_API_BASE` (example `http://localhost:3001`)
-- `VITE_GUILD_ID`
-
-Optional log relay for Vite process:
-- `DISCORD_LOG_WEBHOOK_URL`
-- `DISCORD_BOT_TOKEN`
-- `DISCORD_LOG_CHANNEL_ID`
-
-## Database
-
-Generate Prisma client:
+Generate Prisma client and apply migrations:
 
 ```bash
 npm run db:generate
-```
-
-Run migrations:
-
-```bash
 npm run db:migrate
 ```
 
-## Run locally
-
-Use separate terminals:
+Start the services in separate terminals:
 
 ```bash
 npm run dev:api
@@ -122,13 +58,13 @@ npm run dev:dashboard
 
 ## Build
 
-Build all packages and apps:
+Build everything:
 
 ```bash
 npm run build
 ```
 
-Or build specific apps:
+Build a single workspace:
 
 ```bash
 npm run build -w @rail/api
@@ -136,37 +72,82 @@ npm run build -w @rail/bot
 npm run build -w @rail/dashboard
 ```
 
-## Access model
+## Environment variables
 
-Dashboard access is role based:
-- Staff role `1406675931589902466` can access transcripts view
-- Management roles `1407413756971188346` and `1469431145161818123` can access teams, categories, panels, and settings
-- Discord administrators can access management views
-- Superuser has additional privileged actions such as force close and delete all transcripts
+Create `.env` files per app.
 
-## Recent Updates
+### API (`apps/api/.env`)
 
-- Added ticket participant management commands:
-	- `/add account:<user>`
-	- `/remove account:<user>` or `/remove role:<role>`
-- Added force unclaim command:
-	- `/forceunclaim` (superusers and Discord administrators only)
-- Added inactivity override command:
-	- `/autoclose exclude` to exempt a ticket from inactivity warning/auto-close checks
-- Added ticket creation blacklist support for role `1478457037607403610`
-- Added transcript access filtering by support-team role hierarchy
-- Added configurable claimer bypass roles (dashboard settings)
-- Improved mobile OAuth reliability with signed auth-token fallback in addition to session/cookie auth
+Required:
 
-## Dashboard Settings
+- `PORT` (example: `3001`)
+- `SESSION_SECRET`
+- `DASHBOARD_ORIGIN` (example: `http://localhost:5173`)
+- `DISCORD_CLIENT_ID`
+- `DISCORD_CLIENT_SECRET`
+- `DISCORD_REDIRECT_URI` (example: `http://localhost:3001/auth/callback`)
+- `DISCORD_BOT_TOKEN`
+- `BOT_INTERNAL_URL` (example: `http://localhost:3002`)
+- `BOT_INTERNAL_SECRET`
 
-Guild settings now include:
-- `transcriptChannelId`
-- `mediaForumChannelId`
-- `claimerBypassRoleIds` (roles that can manage claimed tickets without being the claimer)
+Common optional:
 
-## Logging relay
+- `DASHBOARD_ORIGINS` (comma-separated additional allowed origins)
+- `SESSION_COOKIE_SECURE`
+- `SESSION_COOKIE_SAMESITE`
+- `SUPERUSERS_JSON`
+- `DEV_BYPASS_USER_ID` (dev only)
+- `AUTH_COOKIE_NAME`
+- `SUPPORT_EMAIL`
+- `DISCORD_LOG_WEBHOOK_URL`
+- `DISCORD_LOG_CHANNEL_ID`
 
-API, bot, and dashboard Vite relay follow this order:
-1. Try `DISCORD_LOG_WEBHOOK_URL`
-2. If webhook fails and fallback config exists, send via bot token and channel id
+### Bot (`apps/bot/.env`)
+
+Required:
+
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_APP_ID`
+- `DISCORD_GUILD_ID`
+- `BOT_INTERNAL_SECRET` (must match API)
+- `PORT` or `INTERNAL_PORT` (example: `3002`)
+
+Common optional:
+
+- `DASHBOARD_ORIGIN` / `DASHBOARD_URL` / `PUBLIC_DASHBOARD_URL`
+- `TRANSCRIPT_CHANNEL_ID`
+- `MEDIA_FORUM_CHANNEL_ID`
+- `ATTACHMENT_FORUM_CHANNEL_ID`
+- `ATTACHMENT_ARCHIVE_CHANNEL_ID`
+- `MEDIA_ARCHIVE_CHANNEL_ID`
+- `TICKET_INACTIVE_WARN_HOURS`
+- `TICKET_INACTIVE_CLOSE_HOURS`
+- `TEAM_AUTOCOMPLETE_CACHE_TTL_MS`
+- `ATTACHMENT_STORAGE_CACHE_TTL_MS`
+- `RENAME_MIN_INTERVAL_MS`
+- `SUPERUSER_SHOW_IDS`
+- `SUPERUSERS_JSON`
+- `DEV_BYPASS_USER_ID` (dev only)
+- `DISCORD_LOG_WEBHOOK_URL`
+- `DISCORD_LOG_CHANNEL_ID`
+
+### Dashboard (`apps/dashboard/.env`)
+
+Required:
+
+- `VITE_API_BASE` (example: `http://localhost:3001`)
+- `VITE_GUILD_ID`
+
+## Access model summary
+
+- Transcript-only access: staff-level role
+- Management access: management roles and Discord administrators
+- Superuser: additional privileged actions (for example, global transcript deletion and forced actions)
+
+Exact role IDs are configured in code and/or runtime settings for your deployment.
+
+## Notes
+
+- Keep secrets out of source control.
+- Prefer webhook-based logging (`DISCORD_LOG_WEBHOOK_URL`) when available.
+- If panel publish fails, verify `BOT_INTERNAL_URL` and `BOT_INTERNAL_SECRET` on both API and bot.
